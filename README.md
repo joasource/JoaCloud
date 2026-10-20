@@ -31,7 +31,7 @@ programa gera o **Termo de Recebimento** com os hashes conferidos.
 Autor: Joaquim Ferreira Silva Neto — joaquimfsneto@gmail.com
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="Janela principal do JoaCloud: seleção do CSV da Apple e da pasta de destino, senha GPG, as três etapas do pipeline (Baixar/Verificar/Descriptografar) e a lista de arquivos com log ao lado." width="760">
+  <img src="docs/screenshot.png" alt="Janela principal do JoaCloud v2.1.0: seletor de provedor (Apple/Google), seleção do CSV da Apple e da pasta de destino, senha GPG, as três etapas do pipeline (Baixar/Verificar/Descriptografar) e a lista de arquivos com log ao lado." width="760">
 </p>
 
 ## O que você precisa antes de começar
