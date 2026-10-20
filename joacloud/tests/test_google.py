@@ -409,3 +409,55 @@ def test_cli_run_google_ignores_decrypt_flag(lers_folder, tmp_path):
     code = cli.main(["run", "--provider", "google", "--source", str(folder), "--output-dir",
                      str(tmp_path / "out"), "--no-download", "--no-verify", "--decrypt", "--yes", "--quiet"])
     assert code == cli.EXIT_FATAL  # sem etapa 3 no Google, nao sobra etapa nenhuma
+
+
+# ------------------------------------------------ documentos (PDFs do LERS)
+
+def _write_manifest(folder: Path, kinds: dict[str, str]) -> None:
+    import json
+
+    import lers
+
+    files = [{"name": n, "kind": k, "size": 0, "file_id": i, "request_id": 1} for i, (n, k) in enumerate(kinds.items())]
+    (folder / lers.MANIFEST_NAME).write_text(json.dumps({"files": files}), encoding="utf-8")
+
+
+def test_document_paths_only_pdfs_from_lers_manifest(lers_folder, tmp_path):
+    folder, _, _ = lers_folder
+    _write_pdf(folder / "Colocado a mao.pdf", ["nao veio do LERS"])
+    _write_pdf(folder / "Oficio.pdf", ["oficio do orgao"])
+    _write_manifest(folder, {
+        "Carta 999999999.pdf": "CORRESPONDENCE",
+        "Valores de Hash 999999999.pdf": "CORRESPONDENCE",
+        "Oficio.pdf": "LEGAL_PROCESS",
+        PRODUCTION: "PRODUCTION",
+        "Removido depois.pdf": "CORRESPONDENCE",
+    })
+    out = tmp_path / "out"
+    _run(folder, out)  # prepare copia PDFs e manifesto
+
+    names = [p.name for p in get_provider("google").document_paths(out)]
+    assert names == ["Carta 999999999.pdf", "Valores de Hash 999999999.pdf"]
+
+
+def test_document_paths_without_manifest_is_empty(lers_folder):
+    folder, _, _ = lers_folder
+    assert get_provider("google").document_paths(folder) == []
+
+
+def test_cli_report_google_lists_pdf_hashes_before_raw_data(lers_folder, tmp_path, capsys):
+    folder, _, hashes = lers_folder
+    _write_manifest(folder, {"Carta 999999999.pdf": "CORRESPONDENCE", "Valores de Hash 999999999.pdf": "CORRESPONDENCE"})
+    out = tmp_path / "out"
+    cli.main(["run", "--provider", "google", "--source", str(folder), "--output-dir", str(out), "--yes", "--quiet"])
+    capsys.readouterr()
+    cli.main(["report", "--provider", "google", "--source", str(folder), "--output-dir", str(out)])
+    text = capsys.readouterr().out
+
+    carta = hashlib.sha512((out / "Carta 999999999.pdf").read_bytes()).hexdigest()
+    docs = text.index(report.DOCUMENTOS_TITULO)
+    raw = text.index("ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)")
+    assert docs < raw
+    assert carta in text[docs:raw]
+    assert all(digest in text[raw:] for digest in hashes.values())
+    assert f"**Quantidade de Arquivos:** {len(hashes)}" in text

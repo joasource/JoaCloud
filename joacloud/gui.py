@@ -1431,6 +1431,7 @@ class JoaCloudGUI(ctk.CTk):
         output_box.pack(fill="both", expand=True, pady=(10, 0))
 
         win.hash_rows = []
+        win.document_hash_rows = []
         win.hash_status_var = hash_status_var
         win.generate_button = generate_button
         win.copy_button = copy_button
@@ -1480,7 +1481,7 @@ class JoaCloudGUI(ctk.CTk):
                     entries, Path(output_dir), max_workers=max_workers, on_progress=on_progress,
                     provider=self.provider,
                 )
-                result_queue.put(rows)
+                result_queue.put((rows, report.compute_document_hash_rows(Path(output_dir), self.provider)))
 
             threading.Thread(target=worker, daemon=True).start()
             self._poll_report_hash_queue(win, result_queue, progress_queue)
@@ -1494,7 +1495,7 @@ class JoaCloudGUI(ctk.CTk):
             return
 
         try:
-            rows = result_queue.get_nowait()
+            rows, document_rows = result_queue.get_nowait()
         except queue.Empty:
             while True:
                 try:
@@ -1518,10 +1519,13 @@ class JoaCloudGUI(ctk.CTk):
             return
 
         win.hash_rows = rows
+        win.document_hash_rows = document_rows
         win.generate_button.configure(state="normal", text="Gerar termo")
         faltando = [row.file_name for row in rows if row.digest is None]
         total_volume = report.humanize_bytes(sum(row.size_bytes for row in rows))
         status = f"{len(rows)} arquivo(s) encontrado(s), volume total {total_volume}."
+        if document_rows:
+            status += f" Mais {len(document_rows)} documento(s) PDF do provedor."
         if faltando:
             status += f" Não encontrados em disco: {', '.join(faltando)}."
         win.hash_status_var.set(status)
@@ -1543,6 +1547,7 @@ class JoaCloudGUI(ctk.CTk):
             disponibiliza_original=v["disponibiliza_original"].get(),
             disponibiliza_processada=v["disponibiliza_processada"].get(),
             hash_rows=win.hash_rows,
+            document_hash_rows=win.document_hash_rows,
             gpg_passphrase=self.passphrase_var.get(),
             incluir_senha_gpg=v["incluir_senha_gpg"].get(),
             **report.provider_fields(win.provider),

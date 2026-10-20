@@ -229,3 +229,66 @@ def test_build_docx_includes_gpg_password_only_when_flagged(tmp_path):
 
     full_text_sem_flag = "\n".join(p.text for p in Document(str(out_path_sem_flag)).paragraphs)
     assert "Senha de Descriptografia" not in full_text_sem_flag
+
+
+# ------------------------------------------------- documentos do provedor (PDFs)
+
+def _data_with_documents(**kwargs):
+    return report.ReportData(
+        hash_rows=[report.HashRow(file_name="dados.zip", digest="aa" * 64, size_bytes=1000)],
+        document_hash_rows=[report.HashRow(file_name="Carta 1.pdf", digest="bb" * 64, size_bytes=50)],
+        algoritmo="SHA-512",
+        **kwargs,
+    )
+
+
+def test_render_report_without_documents_keeps_original_numbering():
+    text = report.render_report(report.ReportData())
+    assert report.DOCUMENTOS_TITULO not in text
+    assert "## 3. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)" in text
+    assert "## 5. DISPONIBILIZAÇÃO" in text
+
+
+def test_render_report_documents_come_before_raw_data_and_renumber():
+    text = report.render_report(_data_with_documents())
+    docs = text.index(f"## 3. {report.DOCUMENTOS_TITULO}")
+    raw = text.index("## 4. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)")
+    assert docs < raw
+    assert "## 5. REGISTRO DE CUSTÓDIA E INTEGRIDADE" in text
+    assert "## 6. DISPONIBILIZAÇÃO" in text
+    assert f"| Carta 1.pdf | {'bb' * 64} |" in text[docs:raw]
+    # PDFs nao entram no volume/quantidade dos dados brutos
+    assert "**Quantidade de Arquivos:** 1" in text
+    assert "**Volume Total (Bytes/GB/TB):** 1000 bytes" in text
+
+
+def test_render_report_html_documents_before_raw_data():
+    html = report.render_report_html(_data_with_documents())
+    docs = html.index(f"3. {report.DOCUMENTOS_TITULO}")
+    raw = html.index("4. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)")
+    assert docs < raw
+    assert "Carta 1.pdf" in html[docs:raw] and "bb" * 64 in html[docs:raw]
+    assert "6. DISPONIBILIZAÇÃO" in html
+
+
+def test_build_docx_documents_table_before_raw_data_table(tmp_path):
+    from docx import Document
+
+    out_path = tmp_path / "termo_docs.docx"
+    report.build_docx(_data_with_documents(), out_path)
+    doc = Document(str(out_path))
+
+    assert len(doc.tables) == 2
+    assert [c.text for c in doc.tables[0].rows[0].cells] == ["Documento", "Hash"]
+    assert [c.text for c in doc.tables[0].rows[1].cells] == ["Carta 1.pdf", "bb" * 64]
+    assert [c.text for c in doc.tables[1].rows[0].cells] == ["Arquivo", "Hash"]
+    headings = [p.text for p in doc.paragraphs if p.text[:2] in ("3.", "4.", "5.", "6.")]
+    assert headings == [
+        f"3. {report.DOCUMENTOS_TITULO}", "4. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)",
+        "5. REGISTRO DE CUSTÓDIA E INTEGRIDADE", "6. DISPONIBILIZAÇÃO",
+    ]
+
+
+def test_compute_document_hash_rows_is_empty_for_apple(tmp_path):
+    (tmp_path / "qualquer.pdf").write_bytes(b"x")
+    assert report.compute_document_hash_rows(tmp_path) == []

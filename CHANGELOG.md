@@ -4,6 +4,20 @@ Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Adicionado
+- Google: o Termo de Recebimento ganha a seção **3. Documentação de
+  Encaminhamento do Provedor**, antes dos dados brutos, com o SHA-512 de cada
+  PDF que veio do LERS (cartas, valores de hash). As seções seguintes descem
+  um número. Os PDFs não entram no volume nem na quantidade de arquivos.
+  - O ofício do próprio órgão (`LEGAL_PROCESS`) e PDFs colocados à mão na
+    pasta ficam de fora.
+  - Para saber o que veio do LERS, o download passa a gravar o manifesto
+    `joacloud_lers.json` na pasta, que a etapa Baixar copia para o destino.
+    Pastas baixadas antes desta versão, ou baixadas manualmente pelo site,
+    não têm manifesto, e o termo sai sem essa seção.
+
 ## [2.0.0] - 2026-10-20
 
 ### Alterado (incompatível)

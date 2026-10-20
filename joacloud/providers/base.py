@@ -93,6 +93,11 @@ class Provider:
         """Tamanho em bytes do arquivo de ``entry`` (o que entra no hash)."""
         return self.local_path(entry, output_dir).stat().st_size
 
+    def document_paths(self, output_dir: Path) -> list[Path]:
+        """Documentos do provedor (ex.: PDFs de correspondencia) em
+        ``output_dir`` cujo hash entra no Termo, separado dos dados brutos."""
+        return []
+
     def removable_paths(self, entry: "FileEntry", output_dir: Path) -> list[Path]:
         """O que "excluir" remove para ``entry``: baixado, .part e copia aberta."""
         dest = self.local_path(entry, output_dir)

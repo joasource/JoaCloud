@@ -190,3 +190,25 @@ def test_download_files_rejects_path_in_name(tmp_path):
     with pytest.raises(lers.LersError, match="suspeito"):
         client.download_files(111, bad, tmp_path)
 
+
+
+def test_download_files_records_manifest(tmp_path):
+    files = lers.parse_files(FILES_BODY)
+    contents = {
+        1: ("Carta 999000111.pdf", b"c" * 30), 2: ("Oficio.pdf", b"o" * 20), 3: ("111-20260101-1.zip", b"z" * 50),
+    }
+    client, _ = _client(contents, rapt=True)
+    client.download_files(111, files[:1], tmp_path)
+    client.download_files(111, files[1:], tmp_path)  # segunda chamada acrescenta, nao apaga
+
+    manifest = lers.read_manifest(tmp_path)
+    assert {name: info["kind"] for name, info in manifest.items()} == {
+        "Carta 999000111.pdf": "CORRESPONDENCE", "Oficio.pdf": "LEGAL_PROCESS", "111-20260101-1.zip": "PRODUCTION",
+    }
+    assert manifest["Carta 999000111.pdf"]["request_id"] == 111
+
+
+def test_read_manifest_missing_or_corrupt_is_empty(tmp_path):
+    assert lers.read_manifest(tmp_path) == {}
+    (tmp_path / lers.MANIFEST_NAME).write_text("{nao e json")
+    assert lers.read_manifest(tmp_path) == {}

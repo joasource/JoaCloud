@@ -625,6 +625,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         return EXIT_FATAL
 
     hash_rows = []
+    document_hash_rows = report.compute_document_hash_rows(Path(output_dir), provider) if output_dir else []
     if csv_path and output_dir:
         if interactive:
             selected = selected_entries
@@ -652,6 +653,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         disponibiliza_original=values["disponibiliza_original"],
         disponibiliza_processada=values["disponibiliza_processada"],
         hash_rows=hash_rows,
+        document_hash_rows=document_hash_rows,
         **report.provider_fields(provider),
     )
 

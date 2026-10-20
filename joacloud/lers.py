@@ -311,6 +311,10 @@ REQUEST_STATUS_LABELS = {
 # pelo proprio orgao — por padrao so' baixa o que o Google produziu.
 DEFAULT_FILE_KINDS = ("PRODUCTION", "CORRESPONDENCE")
 
+# Registro, na pasta de destino, do que veio do LERS (nome -> tipo). E' por ele
+# que o Termo sabe quais PDFs da pasta sao do Google, e nao colocados a mao.
+MANIFEST_NAME = "joacloud_lers.json"
+
 
 @dataclass
 class LersRequest:
@@ -389,6 +393,41 @@ def parse_files(body: str) -> list[LersFile]:
 
 def _safe_file_name(name: str) -> bool:
     return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+
+
+def read_manifest(folder: Path) -> dict[str, dict]:
+    """{nome_do_arquivo: {"kind", "size", "file_id", "request_id"}} do que foi
+    baixado do LERS para ``folder``; vazio se a pasta nao tem manifesto (ou
+    ele esta' ilegivel)."""
+    try:
+        data = json.loads((Path(folder) / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, list):
+        return {}
+    return {
+        f["name"]: f for f in files
+        if isinstance(f, dict) and isinstance(f.get("name"), str) and _safe_file_name(f["name"])
+    }
+
+
+def _record_manifest(dest_dir: Path, request_id: int, saved: list[tuple[Path, LersFile]]) -> None:
+    """Acrescenta ``saved`` ao manifesto de ``dest_dir`` (mesmo nome: substitui)."""
+    if not saved:
+        return
+    files = read_manifest(dest_dir)
+    for path, f in saved:
+        files[path.name] = {
+            "name": path.name, "kind": f.kind, "size": f.size, "file_id": f.file_id, "request_id": int(request_id),
+        }
+    target = Path(dest_dir) / MANIFEST_NAME
+    part = target.with_suffix(target.suffix + ".part")
+    part.write_text(
+        json.dumps({"files": [files[name] for name in sorted(files)]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    part.replace(target)
 
 
 class LersClient:
@@ -471,7 +510,10 @@ class LersClient:
         O download exige reautenticacao recente (token "rapt", guardado num
         cookie): sem ele, o primeiro arquivo vai pelo fluxo da propria
         interface do LERS (``download_confirm``), que pede a senha de novo no
-        navegador. Arquivo ja presente com o tamanho certo e' pulado."""
+        navegador. Arquivo ja presente com o tamanho certo e' pulado.
+
+        O que fica em ``dest_dir`` (baixado agora ou ja presente) e' registrado
+        no manifesto ``MANIFEST_NAME`` da pasta."""
         cancel_event = cancel_event or threading.Event()
         dest_dir = Path(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -482,6 +524,7 @@ class LersClient:
         api = f"https://lers.google.com/api/u/{self.session_index}"
         browser = self.browser.browser_session()
         saved: list[Path] = []
+        recorded: list[tuple[Path, LersFile]] = []
         try:
             browser.send("Browser.setDownloadBehavior", {
                 "behavior": "allow", "downloadPath": str(dest_dir.resolve()), "eventsEnabled": True,
@@ -493,6 +536,7 @@ class LersClient:
                     if on_progress:
                         on_progress(f, f.size, f.size)
                     saved.append(target)
+                    recorded.append((target, f))
                     continue
                 if cancel_event.is_set():
                     break
@@ -520,7 +564,9 @@ class LersClient:
                 if path is None:
                     break
                 saved.append(path)
+                recorded.append((path, f))
         finally:
+            _record_manifest(dest_dir, request_id, recorded)
             try:
                 browser.send("Browser.setDownloadBehavior", {"behavior": "default"})
             except LersError:

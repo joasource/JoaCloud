@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 import core
+import lers
 from providers.base import Provider
 
 HASH_ALGORITHM = "sha512"
@@ -251,6 +252,17 @@ class GoogleProvider(Provider):
         with zipfile.ZipFile(path) as zf:
             return zf.getinfo(entry.file_name).file_size
 
+    def document_paths(self, output_dir) -> list[Path]:
+        """PDFs baixados do LERS (segundo o manifesto da pasta) que o Google
+        produziu — fica de fora o oficio enviado pelo proprio orgao."""
+        output_dir = Path(output_dir)
+        return [
+            output_dir / name
+            for name, info in sorted(lers.read_manifest(output_dir).items())
+            if name.lower().endswith(".pdf") and info.get("kind") != "LEGAL_PROCESS"
+            and (output_dir / name).is_file()
+        ]
+
     def removable_paths(self, entry, output_dir) -> list[Path]:
         dest = self.local_path(entry, output_dir)
         part = dest.with_suffix(dest.suffix + ".part")
@@ -263,11 +275,15 @@ class GoogleProvider(Provider):
     # ------------------------------------------------------------- etapas
 
     def prepare(self, config, entries, log) -> None:
-        """Copia os PDFs de correspondencia (incluindo o de hashes) junto com os ZIPs."""
+        """Copia os PDFs de correspondencia (incluindo o de hashes) e o manifesto
+        do LERS junto com os ZIPs."""
         if not config.download or not config.source.is_dir():
             return
         if config.source.resolve() == config.output_dir.resolve():
             return
+        manifest = config.source / lers.MANIFEST_NAME
+        if manifest.is_file():
+            shutil.copy2(manifest, config.output_dir / manifest.name)
         for pdf in sorted(config.source.glob("*.pdf")):
             dest = config.output_dir / pdf.name
             if dest.exists():

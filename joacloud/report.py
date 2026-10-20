@@ -101,6 +101,20 @@ def compute_hash_rows_cached(
     return [rows[e.file_name] for e in entries]
 
 
+def compute_document_hash_rows(output_dir: Path, provider=None) -> list[HashRow]:
+    """Hash (algoritmo do provedor) dos documentos do provedor em output_dir
+    (no Google, os PDFs baixados do LERS) — vao numa secao propria do Termo,
+    fora do volume/quantidade dos dados brutos."""
+    provider = _provider_or_default(provider)
+    rows = []
+    for path in provider.document_paths(Path(output_dir)):
+        try:
+            rows.append(HashRow(path.name, core.hash_of_file(path, provider.hash_algorithm), path.stat().st_size))
+        except OSError:
+            rows.append(HashRow(path.name, None, 0))
+    return rows
+
+
 def humanize_bytes(n: int) -> str:
     size = float(n)
     for unit in ("bytes", "KB", "MB", "GB"):
@@ -134,6 +148,8 @@ class ReportData:
     disponibiliza_original: bool = False
     disponibiliza_processada: bool = False
     hash_rows: list[HashRow] = field(default_factory=list)
+    # Documentos do provedor (PDFs do LERS), na secao antes dos dados brutos.
+    document_hash_rows: list[HashRow] = field(default_factory=list)
     gpg_passphrase: str = ""
     incluir_senha_gpg: bool = False
     # Dependem do provedor (ver providers/); os padroes sao os da Apple.
@@ -177,8 +193,40 @@ def _hash_description(data: ReportData) -> str:
     )
 
 
+DOCUMENTOS_TITULO = "DOCUMENTAÇÃO DE ENCAMINHAMENTO DO PROVEDOR"
+DOCUMENTOS_DESCRICAO = (
+    "Documentos em formato PDF encaminhados pela provedora de aplicação junto com os dados "
+    "(correspondência e relação de valores de hash), cujos códigos hash foram calculados pelo órgão:"
+)
+HASH_NAO_ENCONTRADO = "(arquivo nao encontrado no destino)"
+
+
+def _section_offset(data: ReportData) -> int:
+    """A secao de documentos (quando ha') entra como 3; as seguintes descem um numero."""
+    return 1 if data.document_hash_rows else 0
+
+
+def _documents_section_md(data: ReportData) -> str:
+    if not data.document_hash_rows:
+        return ""
+    table = "\n".join(
+        ["| Documento | Hash |", "|---|---|"]
+        + [f"| {row.file_name} | {row.digest or HASH_NAO_ENCONTRADO} |" for row in data.document_hash_rows]
+    )
+    return f"""## 3. {DOCUMENTOS_TITULO}
+
+{DOCUMENTOS_DESCRICAO}
+
+{table}
+
+- **Algoritmo utilizado:** {data.algoritmo}
+
+"""
+
+
 def render_report(data: ReportData) -> str:
     quantidade, volume, _ = _summary(data)
+    n = _section_offset(data)
 
     if data.hash_rows:
         table_lines = ["| Arquivo | Hash |", "|---|---|"]
@@ -210,7 +258,7 @@ def render_report(data: ReportData) -> str:
   - {_checkbox(data.recebido_portal)} Portal do Provedor
   - {_checkbox(data.recebido_email)} E-mail Oficial
 
-## 3. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)
+{_documents_section_md(data)}## {3 + n}. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)
 
 - **Volume Total (Bytes/GB/TB):** {volume}
 - **Quantidade de Arquivos:** {quantidade}
@@ -222,11 +270,11 @@ def render_report(data: ReportData) -> str:
 
 - **Algoritmo utilizado:** {data.algoritmo}{linha_senha_gpg}
 
-## 4. REGISTRO DE CUSTÓDIA E INTEGRIDADE
+## {4 + n}. REGISTRO DE CUSTÓDIA E INTEGRIDADE
 
 Os dados acima foram recebidos e processados conforme os requisitos de Integridade (permanência inalterada) e Autenticidade (vínculo ao fato investigado). O material foi imediatamente replicado para backup criptografado institucional.
 
-## 5. DISPONIBILIZAÇÃO
+## {5 + n}. DISPONIBILIZAÇÃO
 
 - {_checkbox(data.disponibiliza_original)} Cópia da Aquisição Forense Original (Dados Brutos + Hashes + Metadados)
 - {_checkbox(data.disponibiliza_processada)} Cópia Processada/Indexada
@@ -243,6 +291,9 @@ def render_report_html(data: ReportData) -> str:
     """Fragmento HTML equivalente ao markdown de render_report(), com fonte Arial 12
     e espaçamento de linha 1.5 embutidos via estilo inline, para colar formatado no Word."""
     quantidade, volume, _ = _summary(data)
+    n = _section_offset(data)
+    cell = 'style="border:1px solid #000;padding:4px 8px;"'
+    header_cell = 'style="border:1px solid #000;padding:4px 8px;text-align:left;"'
 
     if data.hash_rows:
         rows_html = "".join(
@@ -261,6 +312,22 @@ def render_report_html(data: ReportData) -> str:
 
     body_style = f"font-family:{FONT_NAME}, sans-serif; font-size:{FONT_SIZE_PT}pt; line-height:{LINE_SPACING};"
     heading_style = f"font-family:{FONT_NAME}, sans-serif;"
+
+    documents_html = ""
+    if data.document_hash_rows:
+        doc_rows_html = "".join(
+            f"<tr><td {cell}>{_esc(row.file_name)}</td><td {cell}>{_esc(row.digest or HASH_NAO_ENCONTRADO)}</td></tr>"
+            for row in data.document_hash_rows
+        )
+        documents_html = f"""<h2 style="{heading_style}">3. {DOCUMENTOS_TITULO}</h2>
+<p>{_esc(DOCUMENTOS_DESCRICAO)}</p>
+<table style="border-collapse:collapse;">
+<tr><th {header_cell}>Documento</th><th {header_cell}>Hash</th></tr>
+{doc_rows_html}
+</table>
+<p><strong>Algoritmo utilizado:</strong> {_esc(data.algoritmo)}</p>
+
+"""
 
     senha_gpg = data.senha_gpg_a_exibir
     linha_senha_gpg_html = (
@@ -290,7 +357,7 @@ def render_report_html(data: ReportData) -> str:
 <li>{_checkbox_html(data.recebido_email)} E-mail Oficial</li>
 </ul>
 
-<h2 style="{heading_style}">3. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)</h2>
+{documents_html}<h2 style="{heading_style}">{3 + n}. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)</h2>
 <ul>
 <li><strong>Volume Total (Bytes/GB/TB):</strong> {volume}</li>
 <li><strong>Quantidade de Arquivos:</strong> {quantidade}</li>
@@ -308,10 +375,10 @@ def render_report_html(data: ReportData) -> str:
 <p><strong>Algoritmo utilizado:</strong> {_esc(data.algoritmo)}</p>
 {linha_senha_gpg_html}
 
-<h2 style="{heading_style}">4. REGISTRO DE CUSTÓDIA E INTEGRIDADE</h2>
+<h2 style="{heading_style}">{4 + n}. REGISTRO DE CUSTÓDIA E INTEGRIDADE</h2>
 <p>Os dados acima foram recebidos e processados conforme os requisitos de Integridade (permanência inalterada) e Autenticidade (vínculo ao fato investigado). O material foi imediatamente replicado para backup criptografado institucional.</p>
 
-<h2 style="{heading_style}">5. DISPONIBILIZAÇÃO</h2>
+<h2 style="{heading_style}">{5 + n}. DISPONIBILIZAÇÃO</h2>
 <ul>
 <li>{_checkbox_html(data.disponibiliza_original)} Cópia da Aquisição Forense Original (Dados Brutos + Hashes + Metadados)</li>
 <li>{_checkbox_html(data.disponibiliza_processada)} Cópia Processada/Indexada</li>
@@ -369,7 +436,18 @@ def build_docx(data: ReportData, path: Path) -> None:
             run_style(p.add_run(text))
         return p
 
+    def add_hash_table(first_header, rows):
+        table = document.add_table(rows=1, cols=2)
+        table.style = "Table Grid"
+        for cell, text in zip(table.rows[0].cells, (first_header, "Hash")):
+            run_style(cell.paragraphs[0].add_run(text), bold=True)
+        for row in rows:
+            cells = table.add_row().cells
+            for cell, text in zip(cells, (row.file_name, row.digest or HASH_NAO_ENCONTRADO)):
+                run_style(cell.paragraphs[0].add_run(text))
+
     quantidade, volume, _ = _summary(data)
+    n = _section_offset(data)
 
     add_heading("TERMO DE RECEBIMENTO E IDENTIFICAÇÃO DE EVIDÊNCIA TELEMÁTICA", 15)
 
@@ -387,35 +465,32 @@ def build_docx(data: ReportData, path: Path) -> None:
     add_subbullet(data.recebido_portal, "Portal do Provedor")
     add_subbullet(data.recebido_email, "E-mail Oficial")
 
-    add_heading("3. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)", 13)
+    if data.document_hash_rows:
+        add_heading(f"3. {DOCUMENTOS_TITULO}", 13)
+        add_paragraph(DOCUMENTOS_DESCRICAO)
+        add_hash_table("Documento", data.document_hash_rows)
+        add_bullet("Algoritmo utilizado", data.algoritmo)
+
+    add_heading(f"{3 + n}. ESPECIFICAÇÕES TÉCNICAS (DADOS BRUTOS)", 13)
     add_bullet("Volume Total (Bytes/GB/TB)", volume)
     add_bullet("Quantidade de Arquivos", quantidade)
     add_bullet("Código(s) Hash (Original/Nativo)", _hash_description(data))
 
     add_paragraph(bold_prefix="Códigos Hash (Gerados pelo órgão):")
-    rows = data.hash_rows or [HashRow(file_name="[nome-do-arquivo]", digest="[hash]")]
-    table = document.add_table(rows=1, cols=2)
-    table.style = "Table Grid"
-    for cell, text in zip(table.rows[0].cells, ("Arquivo", "Hash")):
-        run_style(cell.paragraphs[0].add_run(text), bold=True)
-    for row in rows:
-        hash_display = row.digest or "(arquivo nao encontrado no destino)"
-        cells = table.add_row().cells
-        for cell, text in zip(cells, (row.file_name, hash_display)):
-            run_style(cell.paragraphs[0].add_run(text))
+    add_hash_table("Arquivo", data.hash_rows or [HashRow(file_name="[nome-do-arquivo]", digest="[hash]")])
     add_bullet("Algoritmo utilizado", data.algoritmo)
     senha_gpg = data.senha_gpg_a_exibir
     if senha_gpg:
         add_bullet("Senha de Descriptografia (GPG)", senha_gpg)
 
-    add_heading("4. REGISTRO DE CUSTÓDIA E INTEGRIDADE", 13)
+    add_heading(f"{4 + n}. REGISTRO DE CUSTÓDIA E INTEGRIDADE", 13)
     add_paragraph(
         "Os dados acima foram recebidos e processados conforme os requisitos de Integridade "
         "(permanência inalterada) e Autenticidade (vínculo ao fato investigado). O material foi "
         "imediatamente replicado para backup criptografado institucional."
     )
 
-    add_heading("5. DISPONIBILIZAÇÃO", 13)
+    add_heading(f"{5 + n}. DISPONIBILIZAÇÃO", 13)
     add_subbullet(data.disponibiliza_original, "Cópia da Aquisição Forense Original (Dados Brutos + Hashes + Metadados)")
     add_subbullet(data.disponibiliza_processada, "Cópia Processada/Indexada")
 
