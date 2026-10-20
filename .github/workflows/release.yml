@@ -160,6 +160,9 @@ jobs:
           path: dist/JoaKApple-x86_64.AppImage
 
   release:
+    # Disparo manual (workflow_dispatch) so' gera os executaveis como
+    # artefatos do Actions, pra teste: release publica so' com tag vX.Y.Z.
+    if: github.event_name == 'push'
     needs: [version, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
@@ -174,7 +177,7 @@ jobs:
           tag_name: ${{ needs.version.outputs.version }}
           name: JoaKApple ${{ needs.version.outputs.version }}
           body: |
-            Toolkit para baixar, verificar e descriptografar retorno de ofícios judiciais da Apple.
+            Toolkit para baixar, verificar e descriptografar retorno de ofícios judiciais da Apple e do Google.
 
             Autor: Joaquim Ferreira Silva Neto — joaquimfsneto@gmail.com
           generate_release_notes: true
