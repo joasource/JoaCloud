@@ -8,6 +8,7 @@ import pytest
 import requests_mock
 
 import core
+from providers import apple
 
 
 def _write_csv(path: Path, header: list[str], rows: list[list[str]]) -> None:
@@ -27,11 +28,11 @@ def test_load_entries_happy_path(tmp_path):
         [["a.txt.gpg", "https://example.com/a", "AAAA"], ["b.txt", "https://example.com/b", ""]],
     )
 
-    entries = core.load_entries(csv_path)
+    entries = apple.load_entries(csv_path)
 
     assert [e.file_name for e in entries] == ["a.txt.gpg", "b.txt"]
-    assert entries[0].sha256_expected == "aaaa"
-    assert entries[1].sha256_expected is None
+    assert entries[0].expected_hash == "aaaa"
+    assert entries[1].expected_hash is None
     assert entries[0].is_encrypted is True
     assert entries[1].is_encrypted is False
 
@@ -44,11 +45,11 @@ def test_load_entries_accepts_alternate_column_names(tmp_path):
         [["c.txt", "https://example.com/c", "BEEF"]],
     )
 
-    entries = core.load_entries(csv_path)
+    entries = apple.load_entries(csv_path)
 
     assert entries[0].file_name == "c.txt"
     assert entries[0].file_link == "https://example.com/c"
-    assert entries[0].sha256_expected == "beef"
+    assert entries[0].expected_hash == "beef"
 
 
 def test_load_entries_skips_blank_rows(tmp_path):
@@ -59,7 +60,7 @@ def test_load_entries_skips_blank_rows(tmp_path):
         [["", "", ""], ["d.txt", "https://example.com/d", ""]],
     )
 
-    entries = core.load_entries(csv_path)
+    entries = apple.load_entries(csv_path)
 
     assert len(entries) == 1
     assert entries[0].file_name == "d.txt"
@@ -67,7 +68,7 @@ def test_load_entries_skips_blank_rows(tmp_path):
 
 def test_load_entries_missing_file_raises(tmp_path):
     with pytest.raises(core.PipelineError):
-        core.load_entries(tmp_path / "nao_existe.csv")
+        apple.load_entries(tmp_path / "nao_existe.csv")
 
 
 def test_load_entries_missing_columns_raises(tmp_path):
@@ -75,7 +76,7 @@ def test_load_entries_missing_columns_raises(tmp_path):
     _write_csv(csv_path, ["Coluna_Qualquer"], [["x"]])
 
     with pytest.raises(core.PipelineError):
-        core.load_entries(csv_path)
+        apple.load_entries(csv_path)
 
 
 def test_load_entries_no_valid_rows_raises(tmp_path):
@@ -83,23 +84,23 @@ def test_load_entries_no_valid_rows_raises(tmp_path):
     _write_csv(csv_path, ["File_Name", "File_Link"], [["", ""]])
 
     with pytest.raises(core.PipelineError):
-        core.load_entries(csv_path)
+        apple.load_entries(csv_path)
 
 
 # ------------------------------------------------------------- PipelineConfig
 
 
 def test_pipeline_config_default_log_path(tmp_path):
-    config = core.PipelineConfig(csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out")
+    config = core.PipelineConfig(source=tmp_path / "x.csv", output_dir=tmp_path / "out")
 
     assert config.log_path == tmp_path / "out" / "joakapple_log.txt"
-    assert config.decrypted_dir == tmp_path / "out" / "decriptado"
+    assert config.unpacked_dir == tmp_path / "out" / "decriptado"
 
 
 def test_pipeline_config_custom_log_path(tmp_path):
     custom_log = tmp_path / "custom.log"
     config = core.PipelineConfig(
-        csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out", log_path=custom_log
+        source=tmp_path / "x.csv", output_dir=tmp_path / "out", log_path=custom_log
     )
 
     assert config.log_path == custom_log
@@ -206,9 +207,9 @@ def _collect_pipeline(config, entries):
 def test_run_pipeline_download_and_verify_ok(tmp_path):
     content = b"conteudo de teste"
     sha = hashlib.sha256(content).hexdigest()
-    entry = core.FileEntry(file_name="ok.txt", file_link="https://example.com/ok.txt", sha256_expected=sha)
+    entry = core.FileEntry(file_name="ok.txt", file_link="https://example.com/ok.txt", expected_hash=sha)
     config = core.PipelineConfig(
-        csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out", decrypt=False
+        source=tmp_path / "x.csv", output_dir=tmp_path / "out", unpack=False
     )
 
     with requests_mock.Mocker() as m:
@@ -223,10 +224,10 @@ def test_run_pipeline_download_and_verify_ok(tmp_path):
 
 def test_run_pipeline_hash_mismatch(tmp_path):
     entry = core.FileEntry(
-        file_name="ruim.txt", file_link="https://example.com/ruim.txt", sha256_expected="0" * 64
+        file_name="ruim.txt", file_link="https://example.com/ruim.txt", expected_hash="0" * 64
     )
     config = core.PipelineConfig(
-        csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out", decrypt=False
+        source=tmp_path / "x.csv", output_dir=tmp_path / "out", unpack=False
     )
 
     with requests_mock.Mocker() as m:
@@ -244,9 +245,9 @@ def test_run_pipeline_skips_already_downloaded_file(tmp_path):
     (output_dir / "existente.txt").write_bytes(b"ja estava aqui")
     entry = core.FileEntry(
         file_name="existente.txt", file_link="https://example.com/nao-deveria-ser-chamado",
-        sha256_expected=None,
+        expected_hash=None,
     )
-    config = core.PipelineConfig(csv_path=tmp_path / "x.csv", output_dir=output_dir, decrypt=False)
+    config = core.PipelineConfig(source=tmp_path / "x.csv", output_dir=output_dir, unpack=False)
 
     with requests_mock.Mocker() as m:
         summary, updates, _ = _collect_pipeline(config, [entry])
@@ -259,9 +260,9 @@ def test_run_pipeline_skips_already_downloaded_file(tmp_path):
 def test_run_pipeline_download_failure_marks_erro(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "RETRY_BACKOFF_SECONDS", 0)  # nao esperar entre tentativas no teste
     entry = core.FileEntry(
-        file_name="falha.txt", file_link="https://example.com/falha.txt", sha256_expected=None
+        file_name="falha.txt", file_link="https://example.com/falha.txt", expected_hash=None
     )
-    config = core.PipelineConfig(csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out", decrypt=False)
+    config = core.PipelineConfig(source=tmp_path / "x.csv", output_dir=tmp_path / "out", unpack=False)
 
     with requests_mock.Mocker() as m:
         m.get("https://example.com/falha.txt", status_code=404)
@@ -277,10 +278,10 @@ def test_run_pipeline_requires_passphrase_when_decrypting(tmp_path):
     output_dir.mkdir()
     (output_dir / "arquivo.gpg").write_bytes(b"nao importa, nao chega a ler")
     entry = core.FileEntry(
-        file_name="arquivo.gpg", file_link="https://example.com/arquivo.gpg", sha256_expected=None
+        file_name="arquivo.gpg", file_link="https://example.com/arquivo.gpg", expected_hash=None
     )
     config = core.PipelineConfig(
-        csv_path=tmp_path / "x.csv", output_dir=output_dir, download=False, passphrase=""
+        source=tmp_path / "x.csv", output_dir=output_dir, download=False, passphrase=""
     )
 
     with pytest.raises(core.PipelineError):
@@ -289,8 +290,8 @@ def test_run_pipeline_requires_passphrase_when_decrypting(tmp_path):
 
 def test_run_pipeline_reports_download_progress(tmp_path):
     content = b"x" * (5 * 1024 * 1024)
-    entry = core.FileEntry(file_name="grande.bin", file_link="https://example.com/grande.bin", sha256_expected=None)
-    config = core.PipelineConfig(csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out", decrypt=False)
+    entry = core.FileEntry(file_name="grande.bin", file_link="https://example.com/grande.bin", expected_hash=None)
+    config = core.PipelineConfig(source=tmp_path / "x.csv", output_dir=tmp_path / "out", unpack=False)
 
     events: list[tuple[str, int, int]] = []
 
@@ -309,7 +310,7 @@ def test_run_pipeline_reports_download_progress(tmp_path):
     assert events[-1][2] == len(content)
 
 
-def test_sha256_of_file_reports_progress(tmp_path, monkeypatch):
+def test_hash_of_file_reports_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "CHUNK_SIZE", 4)
     monkeypatch.setattr(core, "PROGRESS_THROTTLE_SECONDS", 0)
     content = b"conteudo de teste para hash com progresso"
@@ -317,7 +318,7 @@ def test_sha256_of_file_reports_progress(tmp_path, monkeypatch):
     path.write_bytes(content)
 
     events: list[tuple[int, int]] = []
-    digest = core.sha256_of_file(path, on_progress=lambda done, total: events.append((done, total)))
+    digest = core.hash_of_file(path, on_progress=lambda done, total: events.append((done, total)))
 
     assert digest == hashlib.sha256(content).hexdigest()
     assert events, "esperava pelo menos um evento de progresso"
@@ -325,27 +326,27 @@ def test_sha256_of_file_reports_progress(tmp_path, monkeypatch):
     assert events[-1][0] == len(content)
 
 
-def test_sha256_of_file_without_callback_still_works(tmp_path):
+def test_hash_of_file_without_callback_still_works(tmp_path):
     content = b"sem callback nenhum"
     path = tmp_path / "arquivo.bin"
     path.write_bytes(content)
 
-    assert core.sha256_of_file(path) == hashlib.sha256(content).hexdigest()
+    assert core.hash_of_file(path) == hashlib.sha256(content).hexdigest()
 
 
 def test_run_pipeline_caches_computed_hash_on_entry(tmp_path):
     content = b"conteudo de teste"
     sha = hashlib.sha256(content).hexdigest()
-    entry = core.FileEntry(file_name="ok.txt", file_link="https://example.com/ok.txt", sha256_expected=sha)
-    config = core.PipelineConfig(csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out", decrypt=False)
+    entry = core.FileEntry(file_name="ok.txt", file_link="https://example.com/ok.txt", expected_hash=sha)
+    config = core.PipelineConfig(source=tmp_path / "x.csv", output_dir=tmp_path / "out", unpack=False)
 
     with requests_mock.Mocker() as m:
         m.get("https://example.com/ok.txt", content=content)
         _collect_pipeline(config, [entry])
 
     dest = config.output_dir / "ok.txt"
-    assert entry.sha256_computed == sha
-    assert entry.sha256_computed_stat == (dest.stat().st_size, dest.stat().st_mtime)
+    assert entry.computed_hash == sha
+    assert entry.computed_hash_stat == (dest.stat().st_size, dest.stat().st_mtime)
 
 
 def test_cached_file_hash_valid_when_stat_unchanged(tmp_path):
@@ -353,8 +354,8 @@ def test_cached_file_hash_valid_when_stat_unchanged(tmp_path):
     path.write_bytes(b"conteudo")
     stat = path.stat()
     entry = core.FileEntry(
-        file_name="a.txt", file_link="x", sha256_expected=None,
-        sha256_computed="deadbeef", sha256_computed_stat=(stat.st_size, stat.st_mtime),
+        file_name="a.txt", file_link="x", expected_hash=None,
+        computed_hash="deadbeef", computed_hash_stat=(stat.st_size, stat.st_mtime),
     )
 
     assert core.cached_file_hash(entry, path) == "deadbeef"
@@ -365,8 +366,8 @@ def test_cached_file_hash_invalidated_when_file_changes(tmp_path):
     path.write_bytes(b"conteudo")
     stat = path.stat()
     entry = core.FileEntry(
-        file_name="a.txt", file_link="x", sha256_expected=None,
-        sha256_computed="deadbeef", sha256_computed_stat=(stat.st_size, stat.st_mtime),
+        file_name="a.txt", file_link="x", expected_hash=None,
+        computed_hash="deadbeef", computed_hash_stat=(stat.st_size, stat.st_mtime),
     )
 
     path.write_bytes(b"conteudo diferente, tamanho mudou")
@@ -377,7 +378,7 @@ def test_cached_file_hash_invalidated_when_file_changes(tmp_path):
 def test_cached_file_hash_none_when_never_computed(tmp_path):
     path = tmp_path / "a.txt"
     path.write_bytes(b"conteudo")
-    entry = core.FileEntry(file_name="a.txt", file_link="x", sha256_expected=None)
+    entry = core.FileEntry(file_name="a.txt", file_link="x", expected_hash=None)
 
     assert core.cached_file_hash(entry, path) is None
 
@@ -390,10 +391,10 @@ def test_run_pipeline_reports_hash_progress_as_separate_phase(tmp_path, monkeypa
     output_dir.mkdir()
     (output_dir / "existente.bin").write_bytes(content)
     entry = core.FileEntry(
-        file_name="existente.bin", file_link="https://example.com/nao-usado", sha256_expected=sha
+        file_name="existente.bin", file_link="https://example.com/nao-usado", expected_hash=sha
     )
     config = core.PipelineConfig(
-        csv_path=tmp_path / "x.csv", output_dir=output_dir, download=False, decrypt=False
+        source=tmp_path / "x.csv", output_dir=output_dir, download=False, unpack=False
     )
 
     events: list[tuple[str, int, int, str]] = []
@@ -423,7 +424,7 @@ def test_delete_entry_files_removes_downloaded_and_decrypted_copies(tmp_path):
     (output_dir / "arquivo.txt.gpg").write_bytes(b"cifrado")
     (decrypted_dir / "arquivo.txt").write_bytes(b"decifrado")
 
-    entry = core.FileEntry(file_name="arquivo.txt.gpg", file_link="https://example.com/x", sha256_expected=None)
+    entry = core.FileEntry(file_name="arquivo.txt.gpg", file_link="https://example.com/x", expected_hash=None)
 
     removed = core.delete_entry_files(entry, output_dir)
 
@@ -433,7 +434,7 @@ def test_delete_entry_files_removes_downloaded_and_decrypted_copies(tmp_path):
 
 
 def test_delete_entry_files_returns_empty_when_nothing_on_disk(tmp_path):
-    entry = core.FileEntry(file_name="fantasma.txt", file_link="https://example.com/x", sha256_expected=None)
+    entry = core.FileEntry(file_name="fantasma.txt", file_link="https://example.com/x", expected_hash=None)
 
     removed = core.delete_entry_files(entry, tmp_path)
 
@@ -442,9 +443,9 @@ def test_delete_entry_files_returns_empty_when_nothing_on_disk(tmp_path):
 
 def test_run_pipeline_cancel_stops_before_download(tmp_path):
     entry = core.FileEntry(
-        file_name="cancelado.txt", file_link="https://example.com/cancelado.txt", sha256_expected=None
+        file_name="cancelado.txt", file_link="https://example.com/cancelado.txt", expected_hash=None
     )
-    config = core.PipelineConfig(csv_path=tmp_path / "x.csv", output_dir=tmp_path / "out", decrypt=False)
+    config = core.PipelineConfig(source=tmp_path / "x.csv", output_dir=tmp_path / "out", unpack=False)
     cancel_event = threading.Event()
     cancel_event.set()
 
@@ -486,17 +487,17 @@ def test_run_pipeline_decrypts_with_correct_passphrase(tmp_path):
     entry = core.FileEntry(
         file_name="segredo.txt.gpg",
         file_link="https://example.com/nao-usado",
-        sha256_expected=hashlib.sha256(encrypted_path.read_bytes()).hexdigest(),
+        expected_hash=hashlib.sha256(encrypted_path.read_bytes()).hexdigest(),
     )
     config = core.PipelineConfig(
-        csv_path=tmp_path / "x.csv", output_dir=output_dir, download=False, passphrase=passphrase
+        source=tmp_path / "x.csv", output_dir=output_dir, download=False, passphrase=passphrase
     )
 
     summary, updates, _ = _collect_pipeline(config, [entry])
 
     assert summary.concluidos == 1
     assert updates[-1] == "concluido"
-    assert (config.decrypted_dir / "segredo.txt").read_bytes() == plaintext
+    assert (config.unpacked_dir / "segredo.txt").read_bytes() == plaintext
 
 
 @pytestmark_gpg
@@ -518,10 +519,10 @@ def test_run_pipeline_wrong_passphrase_marks_erro(tmp_path):
     )
 
     entry = core.FileEntry(
-        file_name="segredo2.txt.gpg", file_link="https://example.com/nao-usado", sha256_expected=None
+        file_name="segredo2.txt.gpg", file_link="https://example.com/nao-usado", expected_hash=None
     )
     config = core.PipelineConfig(
-        csv_path=tmp_path / "x.csv", output_dir=output_dir, download=False, passphrase="senha-errada"
+        source=tmp_path / "x.csv", output_dir=output_dir, download=False, passphrase="senha-errada"
     )
 
     summary, updates, _ = _collect_pipeline(config, [entry])

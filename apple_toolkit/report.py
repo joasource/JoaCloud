@@ -3,8 +3,9 @@ JoaKApple - gerador do Termo de Recebimento e Identificacao de Evidencia
 Telematica.
 
 Preenche o modelo fornecido pelo usuario com os dados digitados na GUI e com
-os hashes SHA-256 calculados a partir dos arquivos efetivamente recebidos
-(baixados) no diretorio de destino do pipeline.
+os hashes (no algoritmo do provedor: SHA-256 na Apple, SHA-512 no Google)
+calculados a partir dos arquivos efetivamente recebidos (baixados) no
+diretorio de destino do pipeline.
 
 Copyright (C) 2026 Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 
@@ -34,17 +35,19 @@ LINE_SPACING = 1.5
 @dataclass
 class HashRow:
     file_name: str
-    sha256: Optional[str]  # None se o arquivo nao foi encontrado em disco
+    digest: Optional[str]  # None se o arquivo nao foi encontrado em disco
     size_bytes: int = 0
 
 
 def compute_hash_rows(entries: list[core.FileEntry], output_dir: Path) -> list[HashRow]:
-    """Calcula o SHA-256 de cada arquivo recebido (ja baixado) em output_dir."""
+    """Calcula o hash (algoritmo de cada entry) de cada arquivo recebido em output_dir."""
     rows: list[HashRow] = []
     for entry in entries:
         path = output_dir / entry.file_name
         if path.is_file():
-            rows.append(HashRow(entry.file_name, core.sha256_of_file(path), path.stat().st_size))
+            rows.append(
+                HashRow(entry.file_name, core.hash_of_file(path, entry.hash_algorithm), path.stat().st_size)
+            )
         else:
             rows.append(HashRow(entry.file_name, None, 0))
     return rows
@@ -57,7 +60,7 @@ def compute_hash_rows_cached(
     on_progress: Optional[Callable[[core.FileEntry, int, int, str], None]] = None,
 ) -> list[HashRow]:
     """Como compute_hash_rows, mas reaproveita o hash ja calculado na etapa de
-    verificacao do pipeline (core.FileEntry.sha256_computed, valido enquanto o
+    verificacao do pipeline (core.FileEntry.computed_hash, valido enquanto o
     arquivo no disco nao mudar) e paraleliza o calculo do que sobrar, com
     progresso por arquivo via on_progress — evita recalcular do zero (serial e
     sem feedback) o que a GUI acabou de conferir."""
@@ -79,8 +82,8 @@ def compute_hash_rows_cached(
         progress = (
             (lambda done, total: on_progress(entry, done, total, "hash")) if on_progress else None
         )
-        sha256 = core.sha256_of_file(path, on_progress=progress)
-        rows[entry.file_name] = HashRow(entry.file_name, sha256, path.stat().st_size)
+        digest = core.hash_of_file(path, entry.hash_algorithm, on_progress=progress)
+        rows[entry.file_name] = HashRow(entry.file_name, digest, path.stat().st_size)
 
     if pending:
         with ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="report-hash") as pool:
@@ -124,6 +127,10 @@ class ReportData:
     hash_rows: list[HashRow] = field(default_factory=list)
     gpg_passphrase: str = ""
     incluir_senha_gpg: bool = False
+    # Dependem do provedor (ver providers/); os padroes sao os da Apple.
+    provedor: str = "Apple Inc."
+    algoritmo: str = "SHA-256"
+    descricao_pacotes: str = "pacotes criptografados (formato GPG)"
 
     @property
     def senha_gpg_a_exibir(self) -> Optional[str]:
@@ -131,6 +138,15 @@ class ReportData:
         if self.incluir_senha_gpg and self.gpg_passphrase:
             return self.gpg_passphrase
         return None
+
+
+def provider_fields(provider) -> dict:
+    """Campos do ReportData que vem do provedor (nome, algoritmo de hash, formato)."""
+    return {
+        "provedor": provider.legal_name,
+        "algoritmo": provider.hash_label,
+        "descricao_pacotes": provider.package_description,
+    }
 
 
 def _summary(data: ReportData) -> tuple[str, str, int]:
@@ -145,7 +161,7 @@ def _summary(data: ReportData) -> tuple[str, str, int]:
 def _hash_description(data: ReportData) -> str:
     return (
         "Os valores de integridade criptográfica (hashes) referentes aos arquivos contidos nos "
-        "pacotes criptografados (formato GPG) foram devidamente ratificados pela respectiva "
+        f"{data.descricao_pacotes} foram devidamente ratificados pela respectiva "
         "provedora de aplicação. A referida documentação técnica encontra-se encartada aos "
         f"autos do procedimento {data.procedimento_referenciado or '[PROCEDIMENTO REFERENCIADO]'}, "
         f"sob o ID de documento {data.id_documento or '[ID DO DOCUMENTO]'}."
@@ -158,7 +174,7 @@ def render_report(data: ReportData) -> str:
     if data.hash_rows:
         table_lines = ["| Arquivo | Hash |", "|---|---|"]
         for row in data.hash_rows:
-            hash_value = row.sha256 or "(arquivo nao encontrado no destino)"
+            hash_value = row.digest or "(arquivo nao encontrado no destino)"
             table_lines.append(f"| {row.file_name} | {hash_value} |")
         table = "\n".join(table_lines)
     else:
@@ -174,7 +190,7 @@ def render_report(data: ReportData) -> str:
 - **Número do Processo Judicial:** {data.numero_processo or "[NÚMERO DO PROCESSO JUDICIAL]"}
 - **PIC/Inquérito:** {data.numero_pic or "[NÚMERO DO PIC/INQUÉRITO]"}
 - **Órgão de Execução:** {data.orgao_execucao or "[ÓRGÃO DE EXECUÇÃO]"}
-- **Provedor de Aplicação:** Apple Inc.
+- **Provedor de Aplicação:** {data.provedor}
 
 ## 2. DADOS DA RECEPÇÃO
 
@@ -195,7 +211,7 @@ def render_report(data: ReportData) -> str:
 
 {table}
 
-- **Algoritmo utilizado:** SHA-256{linha_senha_gpg}
+- **Algoritmo utilizado:** {data.algoritmo}{linha_senha_gpg}
 
 ## 4. REGISTRO DE CUSTÓDIA E INTEGRIDADE
 
@@ -224,7 +240,7 @@ def render_report_html(data: ReportData) -> str:
             "<tr>"
             f'<td style="border:1px solid #000;padding:4px 8px;">{_esc(row.file_name)}</td>'
             f'<td style="border:1px solid #000;padding:4px 8px;">'
-            f'{_esc(row.sha256) if row.sha256 else "(arquivo nao encontrado no destino)"}</td>'
+            f'{_esc(row.digest) if row.digest else "(arquivo nao encontrado no destino)"}</td>'
             "</tr>"
             for row in data.hash_rows
         )
@@ -250,7 +266,7 @@ def render_report_html(data: ReportData) -> str:
 <li><strong>Número do Processo Judicial:</strong> {_esc(data.numero_processo or "[NÚMERO DO PROCESSO JUDICIAL]")}</li>
 <li><strong>PIC/Inquérito:</strong> {_esc(data.numero_pic or "[NÚMERO DO PIC/INQUÉRITO]")}</li>
 <li><strong>Órgão de Execução:</strong> {_esc(data.orgao_execucao or "[ÓRGÃO DE EXECUÇÃO]")}</li>
-<li><strong>Provedor de Aplicação:</strong> Apple Inc.</li>
+<li><strong>Provedor de Aplicação:</strong> {_esc(data.provedor)}</li>
 </ul>
 
 <h2 style="{heading_style}">2. DADOS DA RECEPÇÃO</h2>
@@ -280,7 +296,7 @@ def render_report_html(data: ReportData) -> str:
 </tr>
 {rows_html}
 </table>
-<p><strong>Algoritmo utilizado:</strong> SHA-256</p>
+<p><strong>Algoritmo utilizado:</strong> {_esc(data.algoritmo)}</p>
 {linha_senha_gpg_html}
 
 <h2 style="{heading_style}">4. REGISTRO DE CUSTÓDIA E INTEGRIDADE</h2>
@@ -352,7 +368,7 @@ def build_docx(data: ReportData, path: Path) -> None:
     add_bullet("Número do Processo Judicial", data.numero_processo or "[NÚMERO DO PROCESSO JUDICIAL]")
     add_bullet("PIC/Inquérito", data.numero_pic or "[NÚMERO DO PIC/INQUÉRITO]")
     add_bullet("Órgão de Execução", data.orgao_execucao or "[ÓRGÃO DE EXECUÇÃO]")
-    add_bullet("Provedor de Aplicação", "Apple Inc.")
+    add_bullet("Provedor de Aplicação", data.provedor)
 
     add_heading("2. DADOS DA RECEPÇÃO", 13)
     add_bullet("Data/Hora", f"{data.data or '[DATA]'}, às {data.hora or '[HORA]'}")
@@ -368,17 +384,17 @@ def build_docx(data: ReportData, path: Path) -> None:
     add_bullet("Código(s) Hash (Original/Nativo)", _hash_description(data))
 
     add_paragraph(bold_prefix="Códigos Hash (Gerados pelo órgão):")
-    rows = data.hash_rows or [HashRow(file_name="[nome-do-arquivo]", sha256="[hash]")]
+    rows = data.hash_rows or [HashRow(file_name="[nome-do-arquivo]", digest="[hash]")]
     table = document.add_table(rows=1, cols=2)
     table.style = "Table Grid"
     for cell, text in zip(table.rows[0].cells, ("Arquivo", "Hash")):
         run_style(cell.paragraphs[0].add_run(text), bold=True)
     for row in rows:
-        hash_display = row.sha256 or "(arquivo nao encontrado no destino)"
+        hash_display = row.digest or "(arquivo nao encontrado no destino)"
         cells = table.add_row().cells
         for cell, text in zip(cells, (row.file_name, hash_display)):
             run_style(cell.paragraphs[0].add_run(text))
-    add_bullet("Algoritmo utilizado", "SHA-256")
+    add_bullet("Algoritmo utilizado", data.algoritmo)
     senha_gpg = data.senha_gpg_a_exibir
     if senha_gpg:
         add_bullet("Senha de Descriptografia (GPG)", senha_gpg)

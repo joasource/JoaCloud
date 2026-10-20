@@ -1,8 +1,8 @@
 """
 JoaKApple - interface grafica.
 
-Toolkit para baixar, verificar e descriptografar retorno de oficios
-judiciais da Apple.
+Toolkit para baixar, verificar e descriptografar/extrair retorno de oficios
+judiciais (Apple, Google).
 
 Autor: Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 
@@ -33,10 +33,11 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 import core
+import providers
 import report
 
 APP_TITLE = "JoaKApple"
-APP_DESCRIPTION = "Toolkit para baixar, verificar e descriptografar retorno de ofícios judiciais da Apple"
+APP_DESCRIPTION = "Toolkit para baixar, verificar e abrir retorno de ofícios judiciais — Apple e Google"
 APP_VERSION = "1.9.0"
 AUTHOR_LINE = "Joaquim Ferreira Silva Neto  ·  joaquimfsneto@gmail.com"
 
@@ -78,6 +79,7 @@ STATUS_LABELS = {
     "baixando": "Baixando...",
     "conferindo": "Conferindo hash...",
     "decriptando": "Descriptografando...",
+    "extraindo": "Extraindo...",
     "hash_invalido": "HASH INVALIDO",
     "erro": "ERRO",
     "cancelado": "Cancelado",
@@ -91,11 +93,16 @@ STATUS_ROW_COLOR = {
     "concluido": STATUS_OK_COLOR,
 }
 
-STEP_META = {
-    "download": ("1", "Baixar", "Baixa os arquivos do CSV, retomando downloads incompletos automaticamente."),
-    "verify": ("2", "Verificar", "Confere o hash SHA256 de cada arquivo contra o valor informado pela Apple."),
-    "decrypt": ("3", "Descriptografar", "Usa a senha GPG para descriptografar os arquivos .gpg já conferidos."),
-}
+STEP_NUMBERS = {"download": "1", "verify": "2", "unpack": "3"}
+
+
+def step_meta(provider, key: str) -> tuple[str, str, str]:
+    """(numero, titulo, descricao) do card da etapa, conforme o provedor."""
+    if key == "download":
+        return STEP_NUMBERS[key], "Baixar", provider.download_description
+    if key == "verify":
+        return STEP_NUMBERS[key], "Verificar", provider.verify_description
+    return STEP_NUMBERS[key], provider.unpack_label, provider.unpack_description
 
 _LEVEL_TAG_RE = re.compile(r"\[(DEBUG|INFO|OK|WARN|ERROR)\s*\]")
 
@@ -175,7 +182,7 @@ def _set_windows_html_clipboard(plain_text: str, html_fragment: str) -> None:
 
 
 class StepCard(ctk.CTkFrame):
-    def __init__(self, master, key: str, on_toggle, **kwargs):
+    def __init__(self, master, key: str, provider, on_toggle, **kwargs):
         super().__init__(
             master,
             fg_color=ACCENT_TINT,
@@ -185,7 +192,8 @@ class StepCard(ctk.CTkFrame):
             **kwargs,
         )
         self.key = key
-        num, title, desc = STEP_META[key]
+        num, title, desc = step_meta(provider, key)
+        self.title = title
         self.var = tk.BooleanVar(value=True)
 
         top = ctk.CTkFrame(self, fg_color="transparent")
@@ -198,10 +206,11 @@ class StepCard(ctk.CTkFrame):
         )
         self.badge.pack(side="left")
 
-        ctk.CTkLabel(
+        self.title_label = ctk.CTkLabel(
             top, text=title, text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(family="DejaVu Sans", size=14, weight="bold"),
-        ).pack(side="left", padx=(8, 0))
+        )
+        self.title_label.pack(side="left", padx=(8, 0))
 
         self.switch = ctk.CTkSwitch(
             top, text="", variable=self.var, width=36,
@@ -210,10 +219,16 @@ class StepCard(ctk.CTkFrame):
         )
         self.switch.pack(side="right")
 
-        ctk.CTkLabel(
+        self.desc_label = ctk.CTkLabel(
             self, text=desc, text_color=TEXT_SECONDARY, justify="left",
             wraplength=200, font=ctk.CTkFont(family="DejaVu Sans", size=11),
-        ).pack(fill="x", padx=14, pady=(0, 12))
+        )
+        self.desc_label.pack(fill="x", padx=14, pady=(0, 12))
+
+    def set_provider(self, provider):
+        _, self.title, desc = step_meta(provider, self.key)
+        self.title_label.configure(text=self.title)
+        self.desc_label.configure(text=desc)
 
     def set_active(self, active: bool):
         self.configure(
@@ -347,13 +362,15 @@ class JoaKAppleGUI(ctk.CTk):
         self.log_queue: queue.Queue = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
+        self.provider = providers.get_provider()
         self.entries: list[core.FileEntry] = []
         self.rows: dict[str, FileRow] = {}
         self.step_cards: dict[str, StepCard] = {}
         self._file_progress: dict[str, core.ProgressEvent] = {}
         self._pipeline_start_time: float = 0.0
 
-        self.csv_path_var = tk.StringVar()
+        self.provider_var = tk.StringVar(value=self.provider.display_name)
+        self.source_path_var = tk.StringVar()
         self.output_dir_var = tk.StringVar()
         self.passphrase_var = tk.StringVar()
         self.workers_var = tk.StringVar(value="4")
@@ -369,6 +386,22 @@ class JoaKAppleGUI(ctk.CTk):
     def _build_widgets(self):
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(18, 6))
+
+        provider_col = ctk.CTkFrame(header, fg_color="transparent")
+        provider_col.pack(side="right", anchor="n")
+        ctk.CTkLabel(
+            provider_col, text="PROVEDOR", text_color=TEXT_SECONDARY,
+            font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
+        ).pack(anchor="e")
+        self.provider_selector = ctk.CTkSegmentedButton(
+            provider_col, values=[p.display_name for p in providers.PROVIDERS.values()],
+            variable=self.provider_var, command=self._on_provider_change,
+            selected_color=ACCENT, selected_hover_color=ACCENT_HOVER,
+            unselected_color="#FFFFFF", unselected_hover_color=BORDER_SOFT,
+            text_color=TEXT_PRIMARY, fg_color=BORDER,
+        )
+        self.provider_selector.pack(anchor="e", pady=(4, 0))
+
         ctk.CTkLabel(
             header, text=APP_TITLE, text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(family="DejaVu Sans", size=20, weight="bold"),
@@ -389,14 +422,17 @@ class JoaKAppleGUI(ctk.CTk):
         config_card.pack(fill="x", padx=20, pady=8)
         config_card.columnconfigure((0, 1), weight=1)
 
-        self._field(config_card, "Arquivo CSV da Apple", self.csv_path_var, self._pick_csv, row=0, col=0)
+        self.source_label = self._field(
+            config_card, self.provider.source_label, self.source_path_var, self._pick_source, row=0, col=0
+        )
         self._field(config_card, "Pasta de destino", self.output_dir_var, self._pick_output_dir, row=0, col=1)
 
         row2 = ctk.CTkFrame(config_card, fg_color="transparent")
         row2.grid(row=1, column=0, columnspan=2, sticky="we", padx=16, pady=(4, 14))
 
         pass_col = ctk.CTkFrame(row2, fg_color="transparent")
-        pass_col.pack(side="left")
+        pass_col.pack(side="left", padx=(0, 32))
+        self.pass_col = pass_col
         ctk.CTkLabel(
             pass_col, text="SENHA GPG", text_color=TEXT_SECONDARY,
             font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
@@ -416,7 +452,8 @@ class JoaKAppleGUI(ctk.CTk):
         self.show_pass_check.pack(side="left", padx=(10, 0))
 
         workers_col = ctk.CTkFrame(row2, fg_color="transparent")
-        workers_col.pack(side="left", padx=(32, 0))
+        workers_col.pack(side="left")
+        self.workers_col = workers_col
         ctk.CTkLabel(
             workers_col, text="DOWNLOADS SIMULTÂNEOS", text_color=TEXT_SECONDARY,
             font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
@@ -440,8 +477,8 @@ class JoaKAppleGUI(ctk.CTk):
         steps_row.pack(fill="x", padx=16, pady=(0, 14))
         steps_row.columnconfigure((0, 1, 2), weight=1)
 
-        for i, key in enumerate(("download", "verify", "decrypt")):
-            card = StepCard(steps_row, key, self._on_step_toggle)
+        for i, key in enumerate(("download", "verify", "unpack")):
+            card = StepCard(steps_row, key, self.provider, self._on_step_toggle)
             card.grid(row=0, column=i, sticky="nsew", padx=6)
             self.step_cards[key] = card
 
@@ -497,7 +534,7 @@ class JoaKAppleGUI(ctk.CTk):
         )
         self.select_all_check.pack(side="left", padx=(10, 8))
         ctk.CTkLabel(
-            list_header, text="ARQUIVOS DO CSV — SELECIONE OS QUE DESEJA PROCESSAR",
+            list_header, text="ARQUIVOS — SELECIONE OS QUE DESEJA PROCESSAR",
             text_color=TEXT_SECONDARY, font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
         ).pack(side="left")
         ctk.CTkButton(
@@ -515,7 +552,7 @@ class JoaKAppleGUI(ctk.CTk):
 
         self.empty_list_label = ctk.CTkLabel(
             self.file_list_frame,
-            text="Selecione o CSV da Apple para listar os arquivos aqui.",
+            text=self._empty_list_text(),
             text_color=TEXT_SECONDARY, font=ctk.CTkFont(family="DejaVu Sans", size=12),
         )
         self.empty_list_label.pack(pady=40)
@@ -555,12 +592,15 @@ class JoaKAppleGUI(ctk.CTk):
         self._update_step_state()
 
     def _field(self, parent, label, variable, command, row, col):
+        """Campo com rotulo + entrada + botao Selecionar; retorna o rotulo
+        (pra poder trocar o texto quando o provedor muda)."""
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
         wrap.grid(row=row, column=col, sticky="we", padx=16, pady=(14, 4))
-        ctk.CTkLabel(
+        label_widget = ctk.CTkLabel(
             wrap, text=label.upper(), text_color=TEXT_SECONDARY,
             font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
-        ).pack(anchor="w")
+        )
+        label_widget.pack(anchor="w")
         inner = ctk.CTkFrame(wrap, fg_color="transparent")
         inner.pack(fill="x", pady=(4, 0))
         entry = ctk.CTkEntry(
@@ -573,7 +613,32 @@ class JoaKAppleGUI(ctk.CTk):
             fg_color="#FFFFFF", hover_color=BORDER_SOFT, text_color=TEXT_PRIMARY,
             border_width=1, border_color=BORDER, corner_radius=8,
         ).pack(side="left", padx=(8, 0))
-        return entry
+        return label_widget
+
+    def _empty_list_text(self) -> str:
+        what = "a pasta com o retorno do LERS" if self.provider.source_is_dir else "o CSV da Apple"
+        return f"Selecione {what} para listar os arquivos aqui."
+
+    def _on_provider_change(self, display_name: str):
+        provider = next(p for p in providers.PROVIDERS.values() if p.display_name == display_name)
+        if provider is self.provider:
+            return
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.provider_var.set(self.provider.display_name)
+            messagebox.showwarning(APP_TITLE, "Aguarde o pipeline atual terminar antes de trocar de provedor.")
+            return
+        self.provider = provider
+        self.source_path_var.set("")
+        self.source_label.configure(text=provider.source_label.upper())
+        if provider.needs_passphrase:
+            self.pass_col.pack(side="left", padx=(0, 32), before=self.workers_col)
+        else:
+            self.pass_col.pack_forget()
+        for card in self.step_cards.values():
+            card.set_provider(provider)
+        self.entries = []
+        self._rebuild_file_list()
+        self._update_step_state()
 
     def _toggle_password(self):
         self.pass_entry.configure(show="" if self.show_pass_var.get() else "*")
@@ -582,17 +647,17 @@ class JoaKAppleGUI(ctk.CTk):
         self._update_step_state()
 
     def _update_step_state(self):
-        decrypt_on = self.step_cards["decrypt"].var.get()
-        pass_state = "normal" if decrypt_on else "disabled"
+        unpack_on = self.step_cards["unpack"].var.get()
+        pass_state = "normal" if unpack_on else "disabled"
         self.pass_entry.configure(state=pass_state)
         self.show_pass_check.configure(state=pass_state)
 
         labels = []
-        for key in ("download", "verify", "decrypt"):
+        for key in ("download", "verify", "unpack"):
             card = self.step_cards[key]
             card.set_active(card.var.get())
             if card.var.get():
-                labels.append(STEP_META[key][1])
+                labels.append(card.title)
 
         if labels:
             self.start_button.configure(
@@ -605,12 +670,15 @@ class JoaKAppleGUI(ctk.CTk):
                 fg_color=BUTTON_DISABLED_BG, hover_color=BUTTON_DISABLED_BG,
             )
 
-    def _pick_csv(self):
-        path = filedialog.askopenfilename(
-            title="Selecione o CSV da Apple", filetypes=[("CSV", "*.csv"), ("Todos", "*.*")]
-        )
+    def _pick_source(self):
+        if self.provider.source_is_dir:
+            path = filedialog.askdirectory(title=f"Selecione a {self.provider.source_label.lower()}")
+        else:
+            path = filedialog.askopenfilename(
+                title=f"Selecione o {self.provider.source_label}", filetypes=[("CSV", "*.csv"), ("Todos", "*.*")]
+            )
         if path:
-            self.csv_path_var.set(path)
+            self.source_path_var.set(path)
             self._reload_file_list()
 
     def _pick_output_dir(self):
@@ -621,13 +689,13 @@ class JoaKAppleGUI(ctk.CTk):
     # --------------------------------------------------------------- file list
 
     def _reload_file_list(self):
-        csv_path = self.csv_path_var.get().strip()
-        if not csv_path:
+        source_path = self.source_path_var.get().strip()
+        if not source_path:
             self.entries = []
             self._rebuild_file_list()
             return
         try:
-            self.entries = core.load_entries(Path(csv_path))
+            self.entries = self.provider.load_entries(Path(source_path))
         except core.PipelineError as exc:
             self.entries = []
             self._rebuild_file_list()
@@ -643,7 +711,7 @@ class JoaKAppleGUI(ctk.CTk):
         if not self.entries:
             self.empty_list_label = ctk.CTkLabel(
                 self.file_list_frame,
-                text="Selecione o CSV da Apple para listar os arquivos aqui.",
+                text=self._empty_list_text(),
                 text_color=TEXT_SECONDARY, font=ctk.CTkFont(family="DejaVu Sans", size=12),
             )
             self.empty_list_label.pack(pady=40)
@@ -680,12 +748,13 @@ class JoaKAppleGUI(ctk.CTk):
             return
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Excluir do disco os arquivos já baixados/descriptografados de:\n\n{entry.file_name}\n\n"
+            f"Excluir do disco os arquivos já obtidos (e a cópia {self.provider.unpack_label.lower()}da) de:"
+            f"\n\n{entry.file_name}\n\n"
             "Essa ação não pode ser desfeita.",
         ):
             return
 
-        removed = core.delete_entry_files(entry, Path(output_dir))
+        removed = core.delete_entry_files(entry, Path(output_dir), self.provider)
         entry.status = "pendente"
         entry.message = ""
         row = self.rows.get(entry.file_name)
@@ -705,21 +774,24 @@ class JoaKAppleGUI(ctk.CTk):
     # ------------------------------------------------------------- pipeline
 
     def _start(self):
-        csv_path = self.csv_path_var.get().strip()
+        provider = self.provider
+        source_path = self.source_path_var.get().strip()
         output_dir = self.output_dir_var.get().strip()
 
         download_on = self.step_cards["download"].var.get()
         verify_on = self.step_cards["verify"].var.get()
-        decrypt_on = self.step_cards["decrypt"].var.get()
+        unpack_on = self.step_cards["unpack"].var.get()
 
-        if not csv_path:
-            messagebox.showerror(APP_TITLE, "Selecione o arquivo CSV da Apple.")
+        if not source_path:
+            messagebox.showerror(APP_TITLE, f"Selecione: {provider.source_label}.")
             return
         if not output_dir:
             messagebox.showerror(APP_TITLE, "Selecione a pasta de destino.")
             return
-        if not (download_on or verify_on or decrypt_on):
-            messagebox.showerror(APP_TITLE, "Selecione ao menos uma etapa (Baixar, Verificar ou Descriptografar).")
+        if not (download_on or verify_on or unpack_on):
+            messagebox.showerror(
+                APP_TITLE, f"Selecione ao menos uma etapa (Baixar, Verificar ou {provider.unpack_label})."
+            )
             return
 
         if not self.entries:
@@ -732,16 +804,17 @@ class JoaKAppleGUI(ctk.CTk):
             messagebox.showerror(APP_TITLE, "Selecione ao menos um arquivo na lista.")
             return
 
-        if decrypt_on and any(e.is_encrypted for e in selected_entries):
-            if not core.check_gpg_available():
+        if unpack_on and any(provider.needs_unpack(e) for e in selected_entries):
+            missing_tool = provider.missing_tool_message()
+            if missing_tool:
                 messagebox.showerror(
                     APP_TITLE,
-                    "O programa 'gpg' nao foi encontrado no PATH.\n"
+                    f"{missing_tool}\n"
                     "Instale o Gpg4win (https://gpg4win.org) e tente novamente,\n"
-                    "ou desmarque a opcao 'Descriptografar'.",
+                    f"ou desmarque a opcao '{provider.unpack_label}'.",
                 )
                 return
-            if not self.passphrase_var.get():
+            if provider.needs_passphrase and not self.passphrase_var.get():
                 messagebox.showerror(APP_TITLE, "Informe a senha do GPG para descriptografar.")
                 return
 
@@ -751,13 +824,14 @@ class JoaKAppleGUI(ctk.CTk):
             max_workers = 4
 
         config = core.PipelineConfig(
-            csv_path=Path(csv_path),
+            source=Path(source_path),
             output_dir=Path(output_dir),
-            passphrase=self.passphrase_var.get(),
+            passphrase=self.passphrase_var.get() if provider.needs_passphrase else "",
             max_workers=max_workers,
             download=download_on,
             verify=verify_on,
-            decrypt=decrypt_on,
+            unpack=unpack_on,
+            provider=provider,
         )
 
         for entry in selected_entries:
@@ -777,6 +851,7 @@ class JoaKAppleGUI(ctk.CTk):
         )
         for card in self.step_cards.values():
             card.switch.configure(state="disabled")
+        self.provider_selector.configure(state="disabled")
         self._set_rows_enabled(False)
 
         self.worker_thread = threading.Thread(
@@ -897,6 +972,7 @@ class JoaKAppleGUI(ctk.CTk):
         )
         for card in self.step_cards.values():
             card.switch.configure(state="normal")
+        self.provider_selector.configure(state="normal")
         self._set_rows_enabled(True)
         self._update_step_state()
 
@@ -958,8 +1034,11 @@ class JoaKAppleGUI(ctk.CTk):
             "disponibiliza_original": tk.BooleanVar(value=False),
             "disponibiliza_processada": tk.BooleanVar(value=False),
             # Nasce marcada so' se ja houver senha digitada na tela principal — nunca
-            # marcada "no vazio" (ver _on_toggle_incluir_senha_gpg).
-            "incluir_senha_gpg": tk.BooleanVar(value=bool(self.passphrase_var.get().strip())),
+            # marcada "no vazio" (ver _on_toggle_incluir_senha_gpg). Provedor sem
+            # senha (Google) nunca publica senha nenhuma.
+            "incluir_senha_gpg": tk.BooleanVar(
+                value=self.provider.needs_passphrase and bool(self.passphrase_var.get().strip())
+            ),
         }
 
         scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
@@ -1003,14 +1082,19 @@ class JoaKAppleGUI(ctk.CTk):
             font=ctk.CTkFont(family="DejaVu Sans", size=13, weight="bold"),
         ).grid(row=7, column=0, columnspan=2, sticky="w", padx=6, pady=(14, 0))
 
-        hash_status_var = tk.StringVar(value="Nenhum arquivo carregado — selecione o CSV e a pasta de destino antes de gerar o termo para preencher volume/quantidade/hashes automaticamente.")
+        win.provider = self.provider
+        hash_status_var = tk.StringVar(
+            value="Nenhum arquivo carregado — selecione a origem dos arquivos e a pasta de destino antes de "
+            "gerar o termo para preencher volume/quantidade/hashes automaticamente."
+        )
         ctk.CTkLabel(
             scroll, textvariable=hash_status_var, text_color=TEXT_SECONDARY, wraplength=680,
             justify="left", font=ctk.CTkFont(family="DejaVu Sans", size=11),
         ).grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0))
 
         gpg_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        gpg_row.grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 0))
+        if self.provider.needs_passphrase:
+            gpg_row.grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 0))
         ctk.CTkCheckBox(
             gpg_row, text="Incluir senha do GPG no termo", variable=win.vars["incluir_senha_gpg"],
             fg_color=ACCENT, text_color=TEXT_PRIMARY,
@@ -1095,9 +1179,9 @@ class JoaKAppleGUI(ctk.CTk):
             ]
         else:
             entries = []
-            if self.csv_path_var.get().strip():
+            if self.source_path_var.get().strip():
                 try:
-                    entries = core.load_entries(Path(self.csv_path_var.get().strip()))
+                    entries = self.provider.load_entries(Path(self.source_path_var.get().strip()))
                 except core.PipelineError:
                     entries = []
 
@@ -1161,7 +1245,7 @@ class JoaKAppleGUI(ctk.CTk):
 
         win.hash_rows = rows
         win.generate_button.configure(state="normal", text="Gerar termo")
-        faltando = [row.file_name for row in rows if row.sha256 is None]
+        faltando = [row.file_name for row in rows if row.digest is None]
         total_volume = report.humanize_bytes(sum(row.size_bytes for row in rows))
         status = f"{len(rows)} arquivo(s) encontrado(s), volume total {total_volume}."
         if faltando:
@@ -1187,6 +1271,7 @@ class JoaKAppleGUI(ctk.CTk):
             hash_rows=win.hash_rows,
             gpg_passphrase=self.passphrase_var.get(),
             incluir_senha_gpg=v["incluir_senha_gpg"].get(),
+            **report.provider_fields(win.provider),
         )
 
     def _generate_report_text(self, win):

@@ -4,6 +4,28 @@ Histórico de versões do JoaKApple. Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Adicionado
+- Suporte ao **Google** (retorno do LERS), além da Apple. Na GUI, o seletor
+  "Provedor" (Apple | Google) troca a origem dos arquivos, as etapas e o
+  Termo; na CLI, `--provider google` (com `--source` como apelido de `--csv`
+  e `--extract` como apelido de `--decrypt`).
+  - A origem é a pasta com o que foi baixado do LERS: os ZIPs de produção
+    e o PDF "Valores de Hash".
+  - **Baixar** tira cada ZIP de dados de dentro do ZIP de produção.
+  - **Verificar** confere o SHA-512 de cada um contra o PDF de hashes do
+    Google (lido com `pypdf`, nova dependência).
+  - **Extrair** descompacta em `extraido/`, sem deixar extração pela metade
+    e recusando caminhos que tentem sair da pasta (zip slip).
+- Termo de Recebimento com provedor, algoritmo de hash e formato dos
+  pacotes de acordo com o provedor (Google LLC, SHA-512, ZIP).
+
+### Alterado
+- O que é específico de cada nuvem saiu do `core.py` para `providers/`
+  (`apple.py`, `google.py`); o motor do pipeline ficou genérico. O
+  comportamento com a Apple não muda.
+
 ## [1.9.0] - 2026-09-18
 
 ### Adicionado

@@ -1,10 +1,11 @@
 """
-JoaKApple - motor do pipeline (baixar, conferir hash, decriptar).
+JoaKApple - motor do pipeline (baixar, conferir hash, abrir: descriptografar/extrair).
 
 Autor: Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 
 Este modulo nao depende de interface grafica: pode ser usado tanto pela GUI
-(gui.py) quanto por um script de linha de comando, se necessario.
+(gui.py) quanto pela linha de comando (cli.py). O que muda de uma nuvem para
+outra (Apple, Google...) fica nos provedores, em providers/.
 
 Copyright (C) 2026 Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 
@@ -19,37 +20,28 @@ para mais detalhes: <https://www.gnu.org/licenses/>.
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import os
 import shutil
-import subprocess
-import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+if TYPE_CHECKING:
+    from providers.base import Provider
 
 CONNECT_TIMEOUT = 15
 READ_TIMEOUT = 60
 MAX_ATTEMPTS = 4
 RETRY_BACKOFF_SECONDS = 5
 CHUNK_SIZE = 1024 * 1024  # 1 MiB
-GPG_TIMEOUT_SECONDS = 300
 PROGRESS_THROTTLE_SECONDS = 0.2
-
-# Nomes de coluna aceitos no CSV da Apple (variam entre exportacoes/idiomas)
-COLUMN_ALIASES = {
-    "file_name": ["File_Name", "File Name", "FileName", "Filename", "Nome_Arquivo"],
-    "file_link": ["File_Link", "File Link", "FileLink", "Link", "URL", "Download_Link"],
-    "sha256": ["GPG_SHA256", "SHA256", "Sha256", "Hash", "GPG_Sha256"],
-}
 
 
 class PipelineError(Exception):
@@ -89,51 +81,21 @@ def log_line(level: str, component: str, message: str, **fields) -> str:
     return line
 
 
-def _bundled_gpg_path() -> Optional[Path]:
-    """Caminho do gpg embutido no executavel (PyInstaller), se houver.
-
-    So o build do Windows embute um GnuPG portatil em ``gnupg-bin/`` ao lado
-    do executavel; no Linux o GnuPG do sistema (quase sempre ja instalado)
-    continua sendo usado via PATH.
-    """
-    base = getattr(sys, "_MEIPASS", None)
-    if not base:
-        return None
-    name = "gpg.exe" if os.name == "nt" else "gpg"
-    candidate = Path(base) / "gnupg-bin" / name
-    return candidate if candidate.is_file() else None
-
-
-def _gpg_executable() -> str:
-    bundled = _bundled_gpg_path()
-    return str(bundled) if bundled else "gpg"
-
-
-def check_gpg_available() -> bool:
-    return _bundled_gpg_path() is not None or shutil.which("gpg") is not None
-
-
-def _resolve_column(fieldnames: list[str], aliases: list[str]) -> Optional[str]:
-    normalized = {f.strip().lower(): f for f in fieldnames if f}
-    for alias in aliases:
-        hit = normalized.get(alias.strip().lower())
-        if hit:
-            return hit
-    return None
-
-
 @dataclass
 class FileEntry:
     file_name: str
+    # Origem do arquivo: URL de download (Apple) ou caminho do ZIP de producao
+    # que contem o arquivo (Google) — quem interpreta e' o provedor.
     file_link: str
-    sha256_expected: Optional[str]
+    expected_hash: Optional[str]
+    hash_algorithm: str = "sha256"
     status: str = "pendente"
     message: str = ""
     # Preenchidos quando a etapa de verificacao do pipeline calcula o hash do
     # arquivo, pra' quem vier depois (ex.: tela do Termo de Recebimento) poder
     # reaproveitar em vez de recalcular — ver cached_file_hash().
-    sha256_computed: Optional[str] = None
-    sha256_computed_stat: Optional[tuple[int, float]] = None
+    computed_hash: Optional[str] = None
+    computed_hash_stat: Optional[tuple[int, float]] = None
 
     @property
     def is_encrypted(self) -> bool:
@@ -230,75 +192,41 @@ class PipelineSummary:
 
 @dataclass
 class PipelineConfig:
-    csv_path: Path
+    # CSV da Apple, pasta com o retorno do LERS do Google... (ver provider.load_entries)
+    source: Path
     output_dir: Path
     passphrase: str = ""
     max_workers: int = 4
     download: bool = True
     verify: bool = True
-    decrypt: bool = True
+    # Etapa 3: descriptografar (Apple) ou extrair (Google).
+    unpack: bool = True
     log_path: Optional[Path] = None
+    provider: Optional["Provider"] = None
 
     def __post_init__(self):
-        self.csv_path = Path(self.csv_path)
+        from providers import get_provider
+
+        self.source = Path(self.source)
         self.output_dir = Path(self.output_dir)
+        if self.provider is None:
+            self.provider = get_provider()
         if self.log_path is None:
             self.log_path = self.output_dir / "joakapple_log.txt"
         else:
             self.log_path = Path(self.log_path)
 
     @property
-    def decrypted_dir(self) -> Path:
-        return self.output_dir / "decriptado"
+    def unpacked_dir(self) -> Path:
+        return self.output_dir / self.provider.unpack_dir_name
 
 
-def load_entries(csv_path: Path) -> list[FileEntry]:
-    csv_path = Path(csv_path)
-    if not csv_path.is_file():
-        raise PipelineError(f"Arquivo CSV nao encontrado: {csv_path}")
-
-    with csv_path.open(newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        if not reader.fieldnames:
-            raise PipelineError("CSV vazio ou sem cabecalho.")
-
-        col_name = _resolve_column(reader.fieldnames, COLUMN_ALIASES["file_name"])
-        col_link = _resolve_column(reader.fieldnames, COLUMN_ALIASES["file_link"])
-        col_hash = _resolve_column(reader.fieldnames, COLUMN_ALIASES["sha256"])
-
-        if not col_name or not col_link:
-            raise PipelineError(
-                "Nao foi possivel identificar as colunas de nome/link do arquivo no CSV. "
-                f"Cabecalho encontrado: {reader.fieldnames}"
-            )
-
-        entries: list[FileEntry] = []
-        for row in reader:
-            file_name = (row.get(col_name) or "").strip()
-            file_link = (row.get(col_link) or "").strip()
-            sha256_expected = (row.get(col_hash) or "").strip().lower() if col_hash else ""
-
-            if not file_name or not file_link:
-                continue
-
-            entries.append(
-                FileEntry(
-                    file_name=file_name,
-                    file_link=file_link,
-                    sha256_expected=sha256_expected or None,
-                )
-            )
-
-    if not entries:
-        raise PipelineError("Nenhuma linha valida encontrada no CSV.")
-
-    return entries
-
-
-def sha256_of_file(
-    path: Path, on_progress: Optional[Callable[[int, int], None]] = None
+def hash_of_file(
+    path: Path,
+    algorithm: str = "sha256",
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> str:
-    hasher = hashlib.sha256()
+    hasher = hashlib.new(algorithm)
     total = path.stat().st_size
     bytes_done = 0
     last_emit = 0.0
@@ -323,15 +251,15 @@ def cached_file_hash(entry: FileEntry, path: Path) -> Optional[str]:
     """Hash ja calculado pro arquivo (na verificacao do pipeline), se o arquivo
     em disco nao mudou desde entao (mesmo tamanho/mtime); None se precisa
     (re)calcular."""
-    if entry.sha256_computed is None or entry.sha256_computed_stat is None:
+    if entry.computed_hash is None or entry.computed_hash_stat is None:
         return None
     try:
         stat = path.stat()
     except OSError:
         return None
-    if (stat.st_size, stat.st_mtime) != entry.sha256_computed_stat:
+    if (stat.st_size, stat.st_mtime) != entry.computed_hash_stat:
         return None
-    return entry.sha256_computed
+    return entry.computed_hash
 
 
 def _make_session() -> requests.Session:
@@ -348,7 +276,7 @@ def _make_session() -> requests.Session:
     return session
 
 
-def _download(
+def download_http(
     session: requests.Session,
     entry: FileEntry,
     dest: Path,
@@ -426,84 +354,27 @@ def _download(
     return False
 
 
-def _decrypt(
-    entry: FileEntry,
-    encrypted_path: Path,
-    decrypted_path: Path,
-    passphrase: str,
-    log: Callable[[str], None],
-) -> bool:
-    decrypted_path.parent.mkdir(parents=True, exist_ok=True)
-    comando = [
-        _gpg_executable(),
-        "--batch",
-        "--yes",
-        "--pinentry-mode",
-        "loopback",
-        "--passphrase-fd",
-        "0",
-        "--output",
-        str(decrypted_path),
-        "--decrypt",
-        str(encrypted_path),
-    ]
-    started = time.monotonic()
-    try:
-        result = subprocess.run(
-            comando,
-            input=passphrase.encode("utf-8"),
-            capture_output=True,
-            timeout=GPG_TIMEOUT_SECONDS,
-        )
-        duration = time.monotonic() - started
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            entry.message = f"gpg falhou: {stderr or 'erro desconhecido'}"
-            decrypted_path.unlink(missing_ok=True)
-            log(
-                log_line(
-                    "ERROR", "gpg", "descriptografia falhou",
-                    file=entry.file_name, exit_code=result.returncode,
-                    duracao=f"{duration:.2f}s", stderr=stderr or "erro desconhecido",
-                )
-            )
-            return False
-        log(
-            log_line(
-                "OK", "gpg", "descriptografia concluida",
-                file=entry.file_name, exit_code=0, duracao=f"{duration:.2f}s",
-                saida=str(decrypted_path),
-            )
-        )
-        return True
-    except subprocess.TimeoutExpired:
-        entry.message = "gpg excedeu o tempo limite"
-        decrypted_path.unlink(missing_ok=True)
-        log(
-            log_line(
-                "ERROR", "gpg", "tempo limite excedido",
-                file=entry.file_name, timeout_s=GPG_TIMEOUT_SECONDS,
-            )
-        )
-        return False
-    except Exception as exc:  # noqa: BLE001
-        entry.message = f"erro ao executar gpg: {exc}"
-        decrypted_path.unlink(missing_ok=True)
-        log(log_line("ERROR", "gpg", "erro ao executar processo", file=entry.file_name, erro=str(exc)))
-        return False
-
-
-def delete_entry_files(entry: FileEntry, output_dir: Path) -> list[Path]:
+def delete_entry_files(
+    entry: FileEntry, output_dir: Path, provider: Optional["Provider"] = None
+) -> list[Path]:
     """Remove do disco os arquivos ja obtidos para ``entry`` (baixado, .part e
-    descriptografado), sem tocar no restante do lote. Retorna os caminhos removidos."""
+    a copia descriptografada/extraida), sem tocar no restante do lote. Retorna
+    os caminhos removidos."""
+    if provider is None:
+        from providers import get_provider
+
+        provider = get_provider()
     output_dir = Path(output_dir)
     dest = output_dir / entry.file_name
     part_path = dest.with_suffix(dest.suffix + ".part")
-    decrypted_path = output_dir / "decriptado" / Path(entry.file_name).stem
+    unpacked_path = provider.unpacked_path(entry, output_dir)
 
     removed: list[Path] = []
-    for path in (dest, part_path, decrypted_path):
-        if path.is_file():
+    for path in (dest, part_path, unpacked_path):
+        if path.is_dir():
+            shutil.rmtree(path)
+            removed.append(path)
+        elif path.is_file():
             path.unlink()
             removed.append(path)
     return removed
@@ -518,13 +389,15 @@ def process_entry(
     on_update: Callable[[FileEntry], None],
     on_progress: Optional[Callable[[FileEntry, int, int, str], None]] = None,
 ) -> None:
+    provider = config.provider
     dest = config.output_dir / entry.file_name
-    decrypted_path = config.decrypted_dir / Path(entry.file_name).stem
+    unpacked_path = provider.unpacked_path(entry, config.output_dir)
+    needs_unpack = config.unpack and provider.needs_unpack(entry)
     thread_name = threading.current_thread().name
 
-    if config.decrypt and entry.is_encrypted and decrypted_path.exists():
+    if needs_unpack and unpacked_path.exists():
         entry.status = "concluido"
-        entry.message = "ja existia descriptografado"
+        entry.message = provider.unpack_done_message
         on_update(entry)
         return
 
@@ -545,7 +418,7 @@ def process_entry(
             entry.status = "baixando"
             on_update(entry)
             log(log_line("INFO", "download", "iniciando download", file=entry.file_name, thread=thread_name, url=entry.file_link))
-            ok = _download(session, entry, dest, cancel_event, log, on_progress=on_progress)
+            ok = provider.fetch(session, entry, dest, cancel_event, log, on_progress=on_progress)
             if cancel_event.is_set():
                 entry.status = "cancelado"
                 on_update(entry)
@@ -565,7 +438,7 @@ def process_entry(
 
     # --- verificacao de hash (etapa opcional) ---
     if config.verify:
-        if entry.sha256_expected:
+        if entry.expected_hash:
             entry.status = "conferindo"
             on_update(entry)
             hash_started = time.monotonic()
@@ -574,21 +447,21 @@ def process_entry(
                 if on_progress
                 else None
             )
-            hash_calculado = sha256_of_file(dest, on_progress=hash_progress)
+            hash_calculado = hash_of_file(dest, entry.hash_algorithm, on_progress=hash_progress)
             hash_duration = time.monotonic() - hash_started
             dest_stat = dest.stat()
-            entry.sha256_computed = hash_calculado
-            entry.sha256_computed_stat = (dest_stat.st_size, dest_stat.st_mtime)
-            if hash_calculado.lower() != entry.sha256_expected.lower():
+            entry.computed_hash = hash_calculado
+            entry.computed_hash_stat = (dest_stat.st_size, dest_stat.st_mtime)
+            if hash_calculado.lower() != entry.expected_hash.lower():
                 entry.status = "hash_invalido"
                 entry.message = (
-                    f"hash esperado {entry.sha256_expected} != calculado {hash_calculado}"
+                    f"hash esperado {entry.expected_hash} != calculado {hash_calculado}"
                 )
                 on_update(entry)
                 log(
                     log_line(
                         "ERROR", "hash", "divergencia de integridade",
-                        file=entry.file_name, esperado=entry.sha256_expected,
+                        file=entry.file_name, esperado=entry.expected_hash,
                         calculado=hash_calculado, duracao=f"{hash_duration:.2f}s",
                     )
                 )
@@ -596,20 +469,26 @@ def process_entry(
             log(
                 log_line(
                     "OK", "hash", "integridade confirmada",
-                    file=entry.file_name, sha256=hash_calculado, duracao=f"{hash_duration:.2f}s",
+                    file=entry.file_name, algoritmo=entry.hash_algorithm, hash=hash_calculado,
+                    duracao=f"{hash_duration:.2f}s",
                 )
             )
         else:
-            log(log_line("DEBUG", "hash", "sem hash no CSV, verificacao pulada", file=entry.file_name))
+            log(log_line("DEBUG", "hash", "sem hash informado pelo provedor, verificacao pulada", file=entry.file_name))
     else:
         log(log_line("DEBUG", "hash", "etapa desmarcada pelo usuario", file=entry.file_name))
 
-    # --- descriptografia (etapa opcional) ---
-    if config.decrypt and entry.is_encrypted:
-        entry.status = "decriptando"
+    # --- descriptografia/extracao (etapa opcional) ---
+    if needs_unpack:
+        entry.status = provider.unpack_status
         on_update(entry)
-        log(log_line("INFO", "gpg", "iniciando descriptografia", file=entry.file_name, thread=thread_name))
-        ok = _decrypt(entry, dest, decrypted_path, config.passphrase, log)
+        log(
+            log_line(
+                "INFO", "pipeline", f"iniciando etapa: {provider.unpack_label.lower()}",
+                file=entry.file_name, thread=thread_name,
+            )
+        )
+        ok = provider.unpack(entry, dest, unpacked_path, config, log)
         if not ok:
             entry.status = "erro"
             on_update(entry)
@@ -632,18 +511,11 @@ def run_pipeline(
     if cancel_event is None:
         cancel_event = threading.Event()
 
-    if entries and any(e.is_encrypted for e in entries) and config.decrypt:
-        if not check_gpg_available():
-            raise PipelineError(
-                "O executavel 'gpg' nao foi encontrado no PATH. "
-                "Instale o Gpg4win (https://gpg4win.org) para descriptografar os arquivos."
-            )
-        if not config.passphrase:
-            raise PipelineError("Senha (passphrase) do GPG nao informada.")
+    config.provider.preflight(config, entries)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    if config.decrypt:
-        config.decrypted_dir.mkdir(parents=True, exist_ok=True)
+    if config.unpack:
+        config.unpacked_dir.mkdir(parents=True, exist_ok=True)
 
     log_lock = threading.Lock()
 
@@ -656,8 +528,8 @@ def run_pipeline(
     safe_log(
         log_line(
             "INFO", "pipeline", "iniciando lote",
-            arquivos=len(entries), workers=max(1, config.max_workers),
-            baixar=config.download, verificar=config.verify, decriptar=config.decrypt,
+            provedor=config.provider.key, arquivos=len(entries), workers=max(1, config.max_workers),
+            baixar=config.download, verificar=config.verify, abrir=config.unpack,
         )
     )
 
