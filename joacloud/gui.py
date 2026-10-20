@@ -39,7 +39,7 @@ import report
 
 APP_TITLE = "JoaCloud"
 APP_DESCRIPTION = "Toolkit para baixar, verificar e abrir retorno de ofícios judiciais — Apple e Google"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 AUTHOR_LINE = "Joaquim Ferreira Silva Neto  ·  joaquimfsneto@gmail.com"
 
 

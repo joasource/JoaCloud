@@ -4,7 +4,7 @@ Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
-## [Não lançado]
+## [2.1.0] - 2026-10-20
 
 ### Adicionado
 - Google: o Termo de Recebimento ganha a seção **3. Documentação de
