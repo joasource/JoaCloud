@@ -218,19 +218,33 @@ def test_load_entries_empty_folder_raises(tmp_path):
 # --------------------------------------------------------------- pipeline
 
 
-def test_run_pipeline_google_fetch_verify_extract(lers_folder, tmp_path):
+PRODUCTION = "12345678-20260101-1.zip"
+
+
+def test_run_pipeline_google_keeps_original_zips_without_extracting(lers_folder, tmp_path):
     folder, inner, _ = lers_folder
     out = tmp_path / "out"
-    config, entries, summary = _run(folder, out)
+    _, entries, summary = _run(folder, out)
 
     assert summary.concluidos == 2 and summary.erros == 0 and summary.hash_invalido == 0
-    for name, data in inner.items():
-        assert (out / name).read_bytes() == data
-    extracted = config.unpacked_dir / Path(INNER_A).stem
-    assert config.unpacked_dir == out / "extraido"
-    assert (extracted / "Android Device Configuration Service" / "Device-1.html").read_bytes() == b"<html>A</html>"
-    assert not list(config.unpacked_dir.glob("*.part"))
+    # O destino tem so' copias identicas do que veio do LERS: nenhum ZIP
+    # interno tirado do de producao, nenhuma pasta extraida.
+    assert sorted(p.name for p in out.iterdir()) == sorted(
+        [PRODUCTION, "Valores de Hash 999999999.pdf", "Carta 999999999.pdf", "joakapple_log.txt"]
+    )
+    for name in (PRODUCTION, "Valores de Hash 999999999.pdf", "Carta 999999999.pdf"):
+        assert (out / name).read_bytes() == (folder / name).read_bytes()
     assert all(e.computed_hash == e.expected_hash for e in entries)
+
+
+def test_run_pipeline_google_copies_production_zip_once(lers_folder, tmp_path):
+    folder, _, _ = lers_folder
+    lines = []
+    provider = get_provider("google")
+    entries = provider.load_entries(folder)
+    config = core.PipelineConfig(source=folder, output_dir=tmp_path / "out", provider=provider, max_workers=4)
+    core.run_pipeline(config, entries, on_update=lambda e: None, log=lines.append)
+    assert sum("ZIP de producao copiado" in line for line in lines) == 1
 
 
 def test_run_pipeline_google_hash_mismatch(lers_folder, tmp_path):
@@ -238,19 +252,35 @@ def test_run_pipeline_google_hash_mismatch(lers_folder, tmp_path):
     # PDF com hash adulterado para INNER_A
     tampered = dict(hashes, **{INNER_A: "0" * 128})
     _write_pdf(folder / "Valores de Hash 999999999.pdf", _hash_pdf_lines(tampered))
-    config, entries, summary = _run(folder, tmp_path / "out")
+    _, entries, _ = _run(folder, tmp_path / "out")
     by_name = {e.file_name: e for e in entries}
     assert by_name[INNER_A].status == "hash_invalido"
     assert by_name[INNER_B].status == "concluido"
-    assert not (config.unpacked_dir / Path(INNER_A).stem).exists()
 
 
-def test_run_pipeline_google_second_run_skips_extracted(lers_folder, tmp_path):
+def test_run_pipeline_google_corrupted_production_zip_marks_erro(lers_folder, tmp_path):
+    folder, _, _ = lers_folder
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / PRODUCTION).write_bytes(b"isto nao e' um zip")
+    _, entries, summary = _run(folder, out)
+    assert summary.erros == 2
+    assert all("falha ao calcular o hash" in e.message for e in entries)
+
+
+def test_run_pipeline_google_second_run_reuses_copy(lers_folder, tmp_path):
     folder, _, _ = lers_folder
     _run(folder, tmp_path / "out")
     _, entries, summary = _run(folder, tmp_path / "out")
-    assert summary.ja_existiam == 2
-    assert all(e.message == "ja existia extraido" for e in entries)
+    assert summary.concluidos == 2 and summary.erros == 0
+    assert all(e.message == "arquivo ja baixado" for e in entries)
+
+
+def test_run_pipeline_google_verify_only(lers_folder):
+    folder, _, hashes = lers_folder
+    _, entries, summary = _run(folder, folder, download=False)
+    assert summary.concluidos == 2
+    assert {e.file_name: e.computed_hash for e in entries} == hashes
 
 
 def test_run_pipeline_google_missing_zip_marks_erro(tmp_path):
@@ -264,24 +294,23 @@ def test_run_pipeline_google_missing_zip_marks_erro(tmp_path):
 
 def test_run_pipeline_google_output_dir_same_as_source(lers_folder):
     folder, inner, _ = lers_folder
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
     _, _, summary = _run(folder, folder)
     assert summary.concluidos == 2 and summary.erros == 0
-    assert (folder / INNER_A).read_bytes() == inner[INNER_A]
+    after = {p.name: p.read_bytes() for p in folder.iterdir() if p.name != "joakapple_log.txt"}
+    assert after == before
 
 
-def test_unpack_rejects_zip_slip(tmp_path):
-    malicious = tmp_path / "mal.zip"
-    with zipfile.ZipFile(malicious, "w") as zf:
-        zf.writestr("../fora.txt", b"x")
-    entry = core.FileEntry(file_name="mal.zip", file_link="", expected_hash=None, hash_algorithm="sha512")
-    dest = tmp_path / "out" / "extraido" / "mal"
-    dest.parent.mkdir(parents=True)
-    provider = get_provider("google")
-    config = core.PipelineConfig(source=tmp_path, output_dir=tmp_path / "out", provider=provider)
-    assert provider.unpack(entry, malicious, dest, config, log=lambda m: None) is False
-    assert "caminho suspeito" in entry.message
-    assert not (tmp_path / "out" / "extraido" / "fora.txt").exists()
-    assert not dest.exists()
+def test_run_pipeline_google_loose_inner_zip(tmp_path):
+    folder = tmp_path / "lers"
+    folder.mkdir()
+    data = _inner_zip_bytes({"a.txt": b"a"})
+    (folder / INNER_A).write_bytes(data)
+    _write_pdf(folder / "hashes.pdf", _hash_pdf_lines({INNER_A: hashlib.sha512(data).hexdigest()}))
+    out = tmp_path / "out"
+    _, _, summary = _run(folder, out)
+    assert summary.concluidos == 1
+    assert (out / INNER_A).read_bytes() == data
 
 
 def test_fetch_cancelled_leaves_no_partial_file(lers_folder, tmp_path):
@@ -290,22 +319,26 @@ def test_fetch_cancelled_leaves_no_partial_file(lers_folder, tmp_path):
     entry = next(e for e in provider.load_entries(folder) if e.file_name == INNER_A)
     cancel = threading.Event()
     cancel.set()
-    dest = tmp_path / INNER_A
+    dest = provider.local_path(entry, tmp_path)
     assert provider.fetch(None, entry, dest, cancel, log=lambda m: None) is False
     assert not dest.exists()
     assert not dest.with_suffix(dest.suffix + ".part").exists()
 
 
-def test_delete_entry_files_removes_extracted_dir(lers_folder, tmp_path):
+def test_delete_entry_files_removes_production_copy(lers_folder, tmp_path):
     folder, _, _ = lers_folder
     out = tmp_path / "out"
     config, entries, _ = _run(folder, out)
     entry = next(e for e in entries if e.file_name == INNER_A)
-    removed = core.delete_entry_files(entry, out, config.provider)
-    assert out / INNER_A in removed
-    assert config.unpacked_dir / Path(INNER_A).stem in removed
-    assert not (config.unpacked_dir / Path(INNER_A).stem).exists()
-    assert (config.unpacked_dir / Path(INNER_B).stem).exists()
+    assert core.delete_entry_files(entry, out, config.provider) == [out / PRODUCTION]
+    assert (folder / PRODUCTION).is_file()
+
+
+def test_delete_entry_files_never_removes_lers_original(lers_folder):
+    folder, _, _ = lers_folder
+    config, entries, _ = _run(folder, folder)
+    assert core.delete_entry_files(entries[0], folder, config.provider) == []
+    assert (folder / PRODUCTION).is_file()
 
 
 # ------------------------------------------------------------- relatorio/CLI
@@ -327,7 +360,17 @@ def test_report_uses_google_provider_fields():
 def test_compute_hash_rows_uses_entry_algorithm(lers_folder, tmp_path):
     folder, inner, hashes = lers_folder
     _, entries, _ = _run(folder, tmp_path / "out")
-    rows = report.compute_hash_rows_cached(entries, tmp_path / "out")
+    provider = get_provider("google")
+    rows = report.compute_hash_rows_cached(entries, tmp_path / "out", provider=provider)
+    assert {r.file_name: r.digest for r in rows} == hashes
+    assert {r.file_name: r.size_bytes for r in rows} == {n: len(d) for n, d in inner.items()}
+
+
+def test_compute_hash_rows_without_cache_reads_inside_production_zip(lers_folder, tmp_path):
+    folder, _, hashes = lers_folder
+    _run(folder, tmp_path / "out")
+    fresh = google.load_entries(folder)  # sem computed_hash
+    rows = report.compute_hash_rows(fresh, tmp_path / "out", get_provider("google"))
     assert {r.file_name: r.digest for r in rows} == hashes
 
 
@@ -336,7 +379,8 @@ def test_cli_run_google_end_to_end(lers_folder, tmp_path):
     out = tmp_path / "out"
     code = cli.main(["run", "--provider", "google", "--source", str(folder), "--output-dir", str(out), "--yes", "--quiet"])
     assert code == cli.EXIT_OK
-    assert (out / "extraido" / Path(INNER_B).stem).is_dir()
+    assert (out / PRODUCTION).read_bytes() == (folder / PRODUCTION).read_bytes()
+    assert not (out / "extraido").exists()
 
 
 def test_cli_report_google_lists_sha512(lers_folder, tmp_path, capsys):
@@ -352,7 +396,8 @@ def test_cli_report_google_lists_sha512(lers_folder, tmp_path, capsys):
         assert digest in text
 
 
-def test_cli_run_no_extract_flag_alias():
-    args = cli.build_parser().parse_args(["run", "--provider", "google", "--no-extract"])
-    assert args.decrypt is False
-    assert args.provider == "google"
+def test_cli_run_google_ignores_decrypt_flag(lers_folder, tmp_path):
+    folder, _, _ = lers_folder
+    code = cli.main(["run", "--provider", "google", "--source", str(folder), "--output-dir",
+                     str(tmp_path / "out"), "--no-download", "--no-verify", "--decrypt", "--yes", "--quiet"])
+    assert code == cli.EXIT_FATAL  # sem etapa 3 no Google, nao sobra etapa nenhuma

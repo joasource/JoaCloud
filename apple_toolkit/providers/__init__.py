@@ -3,7 +3,8 @@ JoaKApple - registro dos provedores de nuvem suportados (Apple, Google...).
 
 Cada provedor sabe de onde vem a lista de arquivos (CSV da Apple, pasta com o
 retorno do LERS do Google), qual algoritmo de hash o provedor usa, e como
-"abrir" cada arquivo depois de conferido (descriptografar .gpg, extrair .zip).
+"abrir" cada arquivo depois de conferido (descriptografar .gpg; no Google os
+ZIPs ficam como vieram).
 O motor do pipeline (core.py) e' o mesmo para todos.
 
 Copyright (C) 2026 Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>

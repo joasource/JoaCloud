@@ -1,8 +1,8 @@
 """
 JoaKApple - interface de linha de comando (Linux).
 
-Cobre as mesmas funcionalidades da GUI (baixar, verificar, descriptografar/
-extrair, listar, excluir e gerar o Termo de Recebimento), para qualquer
+Cobre as mesmas funcionalidades da GUI (baixar, verificar, descriptografar,
+listar, excluir e gerar o Termo de Recebimento), para qualquer
 provedor (--provider apple|google), sem depender de
 tkinter/customtkinter, para rodar em qualquer maquina Linux mesmo sem
 X11/Tk instalado (ex.: servidor, container). So existe no build Linux: o
@@ -302,7 +302,7 @@ def _menu_run_params(
     print("\nETAPAS DO PIPELINE")
     download = _prompt_bool("Baixar", args.download)
     verify = _prompt_bool("Verificar hash", args.verify)
-    decrypt = _prompt_bool(provider.unpack_label, args.decrypt)
+    decrypt = _prompt_bool(provider.unpack_label, args.decrypt) if provider.has_unpack_step else False
 
     workers_str = _prompt("Downloads simultaneos", str(args.workers))
     try:
@@ -344,8 +344,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         return EXIT_FATAL
 
+    decrypt = decrypt and provider.has_unpack_step
     if not (download or verify or decrypt):
-        print("Erro: selecione ao menos uma etapa (--download/--verify/--decrypt ou --extract).", file=sys.stderr)
+        print("Erro: selecione ao menos uma etapa (--download/--verify/--decrypt).", file=sys.stderr)
         return EXIT_FATAL
 
     if not selected:
@@ -374,7 +375,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if interactive and not args.yes:
         print(
             f"\nResumo: {provider.display_name}  ·  {len(selected)} arquivo(s)  ·  baixar={download}  ·  "
-            f"verificar={verify}  ·  {provider.unpack_label.lower()}={decrypt}  ·  workers={workers}"
+            f"verificar={verify}"
+            + (f"  ·  {provider.unpack_label.lower()}={decrypt}" if provider.has_unpack_step else "")
+            + f"  ·  workers={workers}"
         )
         try:
             if not _prompt_bool("Iniciar", True):
@@ -632,7 +635,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
                 print(f"Erro: {exc}", file=sys.stderr)
                 return EXIT_FATAL
             selected = _select_entries(entries, args.only, args.exclude, args.pattern)
-        hash_rows = report.compute_hash_rows(selected, Path(output_dir))
+        hash_rows = report.compute_hash_rows(selected, Path(output_dir), provider)
 
     data = report.ReportData(
         numero_processo=values["numero_processo"],
@@ -675,7 +678,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="joakapple",
-        description="JoaKApple (modo texto, Linux) — baixa, verifica, descriptografa/extrai e gera o "
+        description="JoaKApple (modo texto, Linux) — baixa, verifica, descriptografa e gera o "
         "Termo de Recebimento de retorno de oficios judiciais (Apple, Google).",
     )
     sub = parser.add_subparsers(dest="command")
@@ -690,14 +693,14 @@ def build_parser() -> argparse.ArgumentParser:
             help=source_help or "CSV da Apple, ou pasta com o retorno do LERS (--provider google)",
         )
 
-    run_p = sub.add_parser("run", help="Executa o pipeline (baixar/verificar/descriptografar ou extrair).")
+    run_p = sub.add_parser("run", help="Executa o pipeline (baixar/verificar/descriptografar).")
     add_provider_args(run_p)
     run_p.add_argument("--output-dir", type=Path, default=None, help="Pasta de destino")
     run_p.add_argument("--download", action=argparse.BooleanOptionalAction, default=True)
     run_p.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True)
     run_p.add_argument(
-        "--decrypt", "--extract", dest="decrypt", action=argparse.BooleanOptionalAction, default=True,
-        help="Etapa 3: descriptografar (Apple) ou extrair (Google)",
+        "--decrypt", dest="decrypt", action=argparse.BooleanOptionalAction, default=True,
+        help="Etapa 3 (so' Apple): descriptografar. O Google nao tem etapa 3: os ZIPs ficam originais",
     )
     run_p.add_argument("--workers", type=int, default=4, help="Downloads simultaneos")
     run_p.add_argument("--only", default=None, help="Nomes de arquivo separados por virgula")

@@ -12,9 +12,11 @@ O Google nao fornece CSV. Pelo LERS chegam, por request:
   quebrados em varias linhas pelo layout do PDF.
 
 Aqui a "fonte" e' a pasta com esses arquivos. Cada ZIP interno vira um
-FileEntry; a etapa de "baixar" tira o ZIP interno de dentro do ZIP de producao,
-a verificacao confere o SHA-512 contra o PDF, e a etapa de abrir extrai o ZIP
-interno em ``extraido/<nome>/``.
+FileEntry. Nada e' extraido nem descompactado em disco: os dados ficam nos ZIPs
+originais, como o Google entregou. A etapa de "baixar" copia, byte a byte, o
+ZIP de producao (e os PDFs) para o destino, e a verificacao calcula o SHA-512
+de cada ZIP interno lendo-o direto de dentro do ZIP de producao, conferindo
+contra o PDF. Nao ha etapa 3.
 
 Copyright (C) 2026 Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 
@@ -31,6 +33,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -101,7 +104,7 @@ def _production_zips(folder: Path) -> dict[str, Path]:
     """{nome_do_zip_interno: zip_de_producao_que_o_contem} para os ZIPs da pasta.
 
     ZIPs que nao contem nenhum outro .zip na raiz sao ignorados aqui (podem
-    ser ZIPs internos ja extraidos soltos na pasta, tratados a parte)."""
+    ser ZIPs internos ja soltos na pasta, tratados a parte)."""
     index: dict[str, Path] = {}
     for path in sorted(folder.glob("*.zip")):
         try:
@@ -181,14 +184,20 @@ def _copy_with_progress(src, dst_fh, entry, total, cancel_event, on_progress) ->
     return bytes_done
 
 
-def _safe_target(root: Path, member: str) -> Optional[Path]:
-    """Caminho de extracao dentro de root, ou None se o membro tentar escapar
-    (zip slip: caminho absoluto ou com '..')."""
-    target = (root / member).resolve()
-    root_resolved = root.resolve()
-    if target != root_resolved and root_resolved not in target.parents:
-        return None
-    return target
+# Varios ZIPs internos moram no mesmo ZIP de producao: so' um worker copia
+# cada ZIP de producao, os outros esperam e reaproveitam.
+_copy_locks: dict[Path, threading.Lock] = {}
+_copy_locks_guard = threading.Lock()
+
+
+def _copy_lock(dest: Path) -> threading.Lock:
+    with _copy_locks_guard:
+        return _copy_locks.setdefault(Path(dest).resolve(), threading.Lock())
+
+
+def _is_container(entry: core.FileEntry) -> bool:
+    """True quando o ZIP interno esta' dentro de um ZIP de producao (e nao solto na pasta)."""
+    return bool(entry.file_link) and Path(entry.file_link).name != entry.file_name
 
 
 class GoogleProvider(Provider):
@@ -201,85 +210,98 @@ class GoogleProvider(Provider):
     source_label = "Pasta com o retorno do LERS"
     source_is_dir = True
     download_description = (
-        "Tira cada ZIP de dados de dentro dos ZIPs de produção baixados do LERS."
+        "Copia os ZIPs de produção e os PDFs do LERS para o destino, sem alterá-los."
     )
-    verify_description = "Confere o hash SHA-512 de cada ZIP contra o PDF \"Valores de Hash\" do Google."
-    unpack_label = "Extrair"
-    unpack_description = "Extrai o conteúdo de cada ZIP já conferido para a subpasta extraido/."
-    unpack_status = "extraindo"
-    unpack_dir_name = "extraido"
-    unpack_done_message = "ja existia extraido"
+    verify_description = (
+        "Confere o SHA-512 de cada ZIP de dados (lido dentro do ZIP de produção, "
+        "sem extrair) contra o PDF \"Valores de Hash\" do Google."
+    )
+    unpack_label = ""
+    unpack_description = ""
     needs_passphrase = False
+    has_unpack_step = False
 
     def load_entries(self, source: Path) -> list[core.FileEntry]:
         return load_entries(source)
+
+    # ------------------------------------------------------- arquivos locais
+
+    def local_path(self, entry: core.FileEntry, output_dir: Path) -> Path:
+        name = Path(entry.file_link).name if entry.file_link else entry.file_name
+        return Path(output_dir) / name
+
+    def hash_entry(self, entry, output_dir, on_progress=None) -> str:
+        path = self.local_path(entry, output_dir)
+        if not _is_container(entry):
+            return core.hash_of_file(path, entry.hash_algorithm, on_progress=on_progress)
+        # Le o ZIP interno de dentro do ZIP de producao em memoria, em blocos:
+        # nada e' gravado em disco.
+        with zipfile.ZipFile(path) as zf:
+            info = zf.getinfo(entry.file_name)
+            with zf.open(info) as member:
+                return core.hash_of_stream(member, info.file_size, entry.hash_algorithm, on_progress)
+
+    def entry_size(self, entry, output_dir) -> int:
+        path = self.local_path(entry, output_dir)
+        if not _is_container(entry):
+            return path.stat().st_size
+        with zipfile.ZipFile(path) as zf:
+            return zf.getinfo(entry.file_name).file_size
+
+    def removable_paths(self, entry, output_dir) -> list[Path]:
+        dest = self.local_path(entry, output_dir)
+        part = dest.with_suffix(dest.suffix + ".part")
+        # Nunca apaga o original do LERS: com destino == pasta de origem, o
+        # "arquivo baixado" e' o proprio original.
+        if entry.file_link and dest.resolve() == Path(entry.file_link).resolve():
+            return [part]
+        return [dest, part]
+
+    # ------------------------------------------------------------- etapas
+
+    def prepare(self, config, entries, log) -> None:
+        """Copia os PDFs de correspondencia (incluindo o de hashes) junto com os ZIPs."""
+        if not config.download or not config.source.is_dir():
+            return
+        if config.source.resolve() == config.output_dir.resolve():
+            return
+        for pdf in sorted(config.source.glob("*.pdf")):
+            dest = config.output_dir / pdf.name
+            if dest.exists():
+                continue
+            shutil.copy2(pdf, dest)
+            log(core.log_line("OK", "copia", "PDF copiado", file=pdf.name, bytes=pdf.stat().st_size))
 
     def fetch(self, session, entry, dest, cancel_event, log, on_progress=None) -> bool:
         if not entry.file_link:
             entry.message = "listado no PDF de hashes, mas nao encontrado em nenhum ZIP de producao"
             return False
         source = Path(entry.file_link)
-        part_path = dest.with_suffix(dest.suffix + ".part")
-        started = time.monotonic()
-        try:
-            with part_path.open("wb") as out:
-                if source.name == entry.file_name:
-                    # ZIP interno ja solto na pasta de origem
-                    total = source.stat().st_size
-                    with source.open("rb") as src:
-                        copied = _copy_with_progress(src, out, entry, total, cancel_event, on_progress)
-                else:
-                    with zipfile.ZipFile(source) as zf:
-                        total = zf.getinfo(entry.file_name).file_size
-                        with zf.open(entry.file_name) as src:
-                            copied = _copy_with_progress(src, out, entry, total, cancel_event, on_progress)
-        except (OSError, KeyError, zipfile.BadZipFile) as exc:
-            part_path.unlink(missing_ok=True)
-            entry.message = f"falha ao ler {source.name}: {exc}"
-            log(core.log_line("ERROR", "zip", "falha ao tirar arquivo do ZIP de producao",
-                              file=entry.file_name, origem=source.name, erro=str(exc)))
-            return False
-        if copied is None:
-            part_path.unlink(missing_ok=True)
-            return False
-        part_path.replace(dest)
-        log(core.log_line("OK", "zip", "arquivo obtido do ZIP de producao",
-                          file=entry.file_name, origem=source.name, bytes=copied,
+        with _copy_lock(dest):
+            if dest.exists():  # outro worker ja copiou este ZIP de producao
+                if on_progress:
+                    size = dest.stat().st_size
+                    on_progress(entry, size, size, "download")
+                return True
+            part_path = dest.with_suffix(dest.suffix + ".part")
+            started = time.monotonic()
+            try:
+                total = source.stat().st_size
+                with source.open("rb") as src, part_path.open("wb") as out:
+                    copied = _copy_with_progress(src, out, entry, total, cancel_event, on_progress)
+                if copied is not None:
+                    shutil.copystat(source, part_path)
+            except OSError as exc:
+                part_path.unlink(missing_ok=True)
+                entry.message = f"falha ao copiar {source.name}: {exc}"
+                log(core.log_line("ERROR", "copia", "falha ao copiar ZIP de producao",
+                                  file=entry.file_name, origem=str(source), erro=str(exc)))
+                return False
+            if copied is None:
+                part_path.unlink(missing_ok=True)
+                return False
+            part_path.replace(dest)
+        log(core.log_line("OK", "copia", "ZIP de producao copiado (original, sem alteracao)",
+                          file=dest.name, origem=str(source), bytes=copied,
                           duracao=f"{time.monotonic() - started:.2f}s"))
-        return True
-
-    def needs_unpack(self, entry: core.FileEntry) -> bool:
-        return entry.file_name.lower().endswith(".zip")
-
-    def unpacked_path(self, entry: core.FileEntry, output_dir: Path) -> Path:
-        return Path(output_dir) / self.unpack_dir_name / Path(entry.file_name).stem
-
-    def unpack(self, entry, src, dest, config, log) -> bool:
-        # Extrai numa pasta temporaria e so' renomeia no fim: uma extracao
-        # interrompida nunca deixa ``dest`` pela metade (que seria pulado como
-        # "ja existia extraido" na proxima rodada).
-        tmp = dest.with_name(dest.name + ".part")
-        shutil.rmtree(tmp, ignore_errors=True)
-        started = time.monotonic()
-        try:
-            with zipfile.ZipFile(src) as zf:
-                for info in zf.infolist():
-                    target = _safe_target(tmp, info.filename)
-                    if target is None:
-                        raise core.PipelineError(f"caminho suspeito dentro do ZIP: {info.filename}")
-                    if info.is_dir():
-                        target.mkdir(parents=True, exist_ok=True)
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(info) as member, target.open("wb") as out:
-                        shutil.copyfileobj(member, out, core.CHUNK_SIZE)
-                count = len(zf.infolist())
-            tmp.replace(dest)
-        except (OSError, zipfile.BadZipFile, core.PipelineError) as exc:
-            shutil.rmtree(tmp, ignore_errors=True)
-            entry.message = f"falha ao extrair: {exc}"
-            log(core.log_line("ERROR", "zip", "extracao falhou", file=entry.file_name, erro=str(exc)))
-            return False
-        log(core.log_line("OK", "zip", "extracao concluida", file=entry.file_name, itens=count,
-                          duracao=f"{time.monotonic() - started:.2f}s", saida=str(dest)))
         return True

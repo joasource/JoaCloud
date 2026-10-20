@@ -32,10 +32,12 @@ class Provider:
     As tres etapas do pipeline continuam sendo baixar -> verificar -> abrir,
     mas o que cada uma faz depende do provedor:
 
-    - ``fetch``: Apple baixa por HTTP o link do CSV; Google tira o ZIP interno
-      de dentro do ZIP de producao baixado do LERS.
-    - verificacao: generica, com ``hash_algorithm`` do provedor.
-    - ``unpack``: Apple descriptografa .gpg; Google extrai o .zip.
+    - ``fetch``: Apple baixa por HTTP o link do CSV; Google copia, intacto, o
+      ZIP de producao baixado do LERS.
+    - verificacao: ``hash_entry`` com o ``hash_algorithm`` do provedor (Google
+      le o ZIP interno direto de dentro do ZIP de producao, sem extrair).
+    - ``unpack``: Apple descriptografa .gpg; Google nao tem essa etapa
+      (``has_unpack_step = False``): os ZIPs ficam como vieram.
     """
 
     key: str = ""
@@ -57,6 +59,8 @@ class Provider:
     unpack_dir_name: str = ""
     unpack_done_message: str = ""  # sufixo de "ja existia ..."
     needs_passphrase: bool = False
+    # False quando o provedor nao tem a etapa 3 (os arquivos ficam como vieram).
+    has_unpack_step: bool = True
 
     @property
     def hash_label(self) -> str:
@@ -69,7 +73,38 @@ class Provider:
     def load_entries(self, source: Path) -> list["FileEntry"]:
         raise NotImplementedError
 
+    # ------------------------------------------------------- arquivos locais
+
+    def local_path(self, entry: "FileEntry", output_dir: Path) -> Path:
+        """Arquivo em disco (no destino) que contem ``entry``."""
+        return Path(output_dir) / entry.file_name
+
+    def hash_entry(
+        self,
+        entry: "FileEntry",
+        output_dir: Path,
+        on_progress: Optional[Callable[[int, int], None]] = None,
+    ) -> str:
+        from core import hash_of_file
+
+        return hash_of_file(self.local_path(entry, output_dir), entry.hash_algorithm, on_progress=on_progress)
+
+    def entry_size(self, entry: "FileEntry", output_dir: Path) -> int:
+        """Tamanho em bytes do arquivo de ``entry`` (o que entra no hash)."""
+        return self.local_path(entry, output_dir).stat().st_size
+
+    def removable_paths(self, entry: "FileEntry", output_dir: Path) -> list[Path]:
+        """O que "excluir" remove para ``entry``: baixado, .part e copia aberta."""
+        dest = self.local_path(entry, output_dir)
+        paths = [dest, dest.with_suffix(dest.suffix + ".part")]
+        if self.has_unpack_step:
+            paths.append(self.unpacked_path(entry, output_dir))
+        return paths
+
     # ------------------------------------------------------------- etapas
+
+    def prepare(self, config: "PipelineConfig", entries: list["FileEntry"], log: Callable[[str], None]) -> None:
+        """Chamado uma vez, com o destino ja criado, antes dos arquivos do lote."""
 
     def fetch(
         self,
@@ -85,10 +120,10 @@ class Provider:
         raise NotImplementedError
 
     def needs_unpack(self, entry: "FileEntry") -> bool:
-        raise NotImplementedError
+        return False
 
     def unpacked_path(self, entry: "FileEntry", output_dir: Path) -> Path:
-        raise NotImplementedError
+        return Path(output_dir) / self.unpack_dir_name / entry.file_name
 
     def unpack(
         self,

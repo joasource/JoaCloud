@@ -39,18 +39,19 @@ class HashRow:
     size_bytes: int = 0
 
 
-def compute_hash_rows(entries: list[core.FileEntry], output_dir: Path) -> list[HashRow]:
+def _provider_or_default(provider):
+    if provider is None:
+        from providers import get_provider
+
+        provider = get_provider()
+    return provider
+
+
+def compute_hash_rows(
+    entries: list[core.FileEntry], output_dir: Path, provider=None
+) -> list[HashRow]:
     """Calcula o hash (algoritmo de cada entry) de cada arquivo recebido em output_dir."""
-    rows: list[HashRow] = []
-    for entry in entries:
-        path = output_dir / entry.file_name
-        if path.is_file():
-            rows.append(
-                HashRow(entry.file_name, core.hash_of_file(path, entry.hash_algorithm), path.stat().st_size)
-            )
-        else:
-            rows.append(HashRow(entry.file_name, None, 0))
-    return rows
+    return compute_hash_rows_cached(entries, output_dir, max_workers=1, provider=provider)
 
 
 def compute_hash_rows_cached(
@@ -58,32 +59,40 @@ def compute_hash_rows_cached(
     output_dir: Path,
     max_workers: int = 4,
     on_progress: Optional[Callable[[core.FileEntry, int, int, str], None]] = None,
+    provider=None,
 ) -> list[HashRow]:
     """Como compute_hash_rows, mas reaproveita o hash ja calculado na etapa de
     verificacao do pipeline (core.FileEntry.computed_hash, valido enquanto o
     arquivo no disco nao mudar) e paraleliza o calculo do que sobrar, com
     progresso por arquivo via on_progress — evita recalcular do zero (serial e
-    sem feedback) o que a GUI acabou de conferir."""
+    sem feedback) o que a GUI acabou de conferir.
+
+    Quem diz onde esta' cada arquivo e como calcular o hash e' o provedor (no
+    Google, o ZIP interno e' lido de dentro do ZIP de producao, sem extrair)."""
+    provider = _provider_or_default(provider)
     rows: dict[str, HashRow] = {}
     pending: list[core.FileEntry] = []
     for entry in entries:
-        path = output_dir / entry.file_name
+        path = provider.local_path(entry, output_dir)
         if not path.is_file():
             rows[entry.file_name] = HashRow(entry.file_name, None, 0)
             continue
         cached = core.cached_file_hash(entry, path)
         if cached is not None:
-            rows[entry.file_name] = HashRow(entry.file_name, cached, path.stat().st_size)
+            rows[entry.file_name] = HashRow(entry.file_name, cached, provider.entry_size(entry, output_dir))
         else:
             pending.append(entry)
 
     def _hash_one(entry: core.FileEntry) -> None:
-        path = output_dir / entry.file_name
         progress = (
             (lambda done, total: on_progress(entry, done, total, "hash")) if on_progress else None
         )
-        digest = core.hash_of_file(path, entry.hash_algorithm, on_progress=progress)
-        rows[entry.file_name] = HashRow(entry.file_name, digest, path.stat().st_size)
+        try:
+            digest = provider.hash_entry(entry, output_dir, on_progress=progress)
+            size = provider.entry_size(entry, output_dir)
+        except Exception:  # noqa: BLE001 - ilegivel/ausente: sai como "nao encontrado"
+            digest, size = None, 0
+        rows[entry.file_name] = HashRow(entry.file_name, digest, size)
 
     if pending:
         with ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="report-hash") as pool:

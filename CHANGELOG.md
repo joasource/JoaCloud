@@ -9,15 +9,18 @@ seguem [SemVer](https://semver.org/lang/pt-BR/).
 ### Adicionado
 - Suporte ao **Google** (retorno do LERS), além da Apple. Na GUI, o seletor
   "Provedor" (Apple | Google) troca a origem dos arquivos, as etapas e o
-  Termo; na CLI, `--provider google` (com `--source` como apelido de `--csv`
-  e `--extract` como apelido de `--decrypt`).
+  Termo; na CLI, `--provider google` (com `--source` como apelido de `--csv`).
   - A origem é a pasta com o que foi baixado do LERS: os ZIPs de produção
     e o PDF "Valores de Hash".
-  - **Baixar** tira cada ZIP de dados de dentro do ZIP de produção.
-  - **Verificar** confere o SHA-512 de cada um contra o PDF de hashes do
-    Google (lido com `pypdf`, nova dependência).
-  - **Extrair** descompacta em `extraido/`, sem deixar extração pela metade
-    e recusando caminhos que tentem sair da pasta (zip slip).
+  - Nada é extraído nem descompactado em disco: os dados ficam nos ZIPs
+    originais, como o Google entregou.
+  - **Baixar** copia os ZIPs de produção e os PDFs para o destino, byte a
+    byte (se o destino for a própria pasta do LERS, não copia nada).
+  - **Verificar** calcula o SHA-512 de cada ZIP de dados lendo-o direto de
+    dentro do ZIP de produção e confere contra o PDF de hashes do Google
+    (lido com `pypdf`, nova dependência).
+  - Não há etapa 3 para o Google; o card some da GUI. "Excluir" remove só a
+    cópia no destino, nunca o original do LERS.
 - Termo de Recebimento com provedor, algoritmo de hash e formato dos
   pacotes de acordo com o provedor (Google LLC, SHA-512, ZIP).
 

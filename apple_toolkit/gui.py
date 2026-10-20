@@ -1,7 +1,7 @@
 """
 JoaKApple - interface grafica.
 
-Toolkit para baixar, verificar e descriptografar/extrair retorno de oficios
+Toolkit para baixar, verificar e descriptografar retorno de oficios
 judiciais (Apple, Google).
 
 Autor: Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
@@ -79,7 +79,6 @@ STATUS_LABELS = {
     "baixando": "Baixando...",
     "conferindo": "Conferindo hash...",
     "decriptando": "Descriptografando...",
-    "extraindo": "Extraindo...",
     "hash_invalido": "HASH INVALIDO",
     "erro": "ERRO",
     "cancelado": "Cancelado",
@@ -477,10 +476,10 @@ class JoaKAppleGUI(ctk.CTk):
         steps_row.pack(fill="x", padx=16, pady=(0, 14))
         steps_row.columnconfigure((0, 1, 2), weight=1)
 
-        for i, key in enumerate(("download", "verify", "unpack")):
-            card = StepCard(steps_row, key, self.provider, self._on_step_toggle)
-            card.grid(row=0, column=i, sticky="nsew", padx=6)
-            self.step_cards[key] = card
+        self.steps_row = steps_row
+        for key in ("download", "verify", "unpack"):
+            self.step_cards[key] = StepCard(steps_row, key, self.provider, self._on_step_toggle)
+        self._layout_step_cards()
 
         # --- Action bar ---
         action_bar = ctk.CTkFrame(self, fg_color="transparent")
@@ -619,6 +618,24 @@ class JoaKAppleGUI(ctk.CTk):
         what = "a pasta com o retorno do LERS" if self.provider.source_is_dir else "o CSV da Apple"
         return f"Selecione {what} para listar os arquivos aqui."
 
+    def _step_keys(self) -> tuple[str, ...]:
+        """Etapas que o provedor atual tem (Google nao tem a 3: nada e' extraido)."""
+        if self.provider.has_unpack_step:
+            return ("download", "verify", "unpack")
+        return ("download", "verify")
+
+    def _layout_step_cards(self):
+        keys = self._step_keys()
+        for card in self.step_cards.values():
+            card.grid_forget()
+        for col in range(3):
+            self.steps_row.columnconfigure(col, weight=1 if col < len(keys) else 0)
+        for i, key in enumerate(keys):
+            self.step_cards[key].grid(row=0, column=i, sticky="nsew", padx=6)
+
+    def _unpack_on(self) -> bool:
+        return self.provider.has_unpack_step and self.step_cards["unpack"].var.get()
+
     def _on_provider_change(self, display_name: str):
         provider = next(p for p in providers.PROVIDERS.values() if p.display_name == display_name)
         if provider is self.provider:
@@ -636,6 +653,7 @@ class JoaKAppleGUI(ctk.CTk):
             self.pass_col.pack_forget()
         for card in self.step_cards.values():
             card.set_provider(provider)
+        self._layout_step_cards()
         self.entries = []
         self._rebuild_file_list()
         self._update_step_state()
@@ -647,13 +665,13 @@ class JoaKAppleGUI(ctk.CTk):
         self._update_step_state()
 
     def _update_step_state(self):
-        unpack_on = self.step_cards["unpack"].var.get()
+        unpack_on = self._unpack_on()
         pass_state = "normal" if unpack_on else "disabled"
         self.pass_entry.configure(state=pass_state)
         self.show_pass_check.configure(state=pass_state)
 
         labels = []
-        for key in ("download", "verify", "unpack"):
+        for key in self._step_keys():
             card = self.step_cards[key]
             card.set_active(card.var.get())
             if card.var.get():
@@ -746,9 +764,13 @@ class JoaKAppleGUI(ctk.CTk):
         if not output_dir:
             messagebox.showerror(APP_TITLE, "Selecione a pasta de destino primeiro.")
             return
+        if self.provider.has_unpack_step:
+            what = f"os arquivos já obtidos (e a cópia {self.provider.unpack_label.lower()}da) de"
+        else:
+            what = "a cópia, no destino, do ZIP de produção que contém"
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Excluir do disco os arquivos já obtidos (e a cópia {self.provider.unpack_label.lower()}da) de:"
+            f"Excluir do disco {what}:"
             f"\n\n{entry.file_name}\n\n"
             "Essa ação não pode ser desfeita.",
         ):
@@ -780,7 +802,7 @@ class JoaKAppleGUI(ctk.CTk):
 
         download_on = self.step_cards["download"].var.get()
         verify_on = self.step_cards["verify"].var.get()
-        unpack_on = self.step_cards["unpack"].var.get()
+        unpack_on = self._unpack_on()
 
         if not source_path:
             messagebox.showerror(APP_TITLE, f"Selecione: {provider.source_label}.")
@@ -789,9 +811,10 @@ class JoaKAppleGUI(ctk.CTk):
             messagebox.showerror(APP_TITLE, "Selecione a pasta de destino.")
             return
         if not (download_on or verify_on or unpack_on):
-            messagebox.showerror(
-                APP_TITLE, f"Selecione ao menos uma etapa (Baixar, Verificar ou {provider.unpack_label})."
-            )
+            etapas = "Baixar ou Verificar"
+            if provider.has_unpack_step:
+                etapas = f"Baixar, Verificar ou {provider.unpack_label}"
+            messagebox.showerror(APP_TITLE, f"Selecione ao menos uma etapa ({etapas}).")
             return
 
         if not self.entries:
@@ -1205,6 +1228,7 @@ class JoaKAppleGUI(ctk.CTk):
             def worker() -> None:
                 rows = report.compute_hash_rows_cached(
                     entries, Path(output_dir), max_workers=max_workers, on_progress=on_progress,
+                    provider=self.provider,
                 )
                 result_queue.put(rows)
 

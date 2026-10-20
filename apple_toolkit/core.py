@@ -1,5 +1,5 @@
 """
-JoaKApple - motor do pipeline (baixar, conferir hash, abrir: descriptografar/extrair).
+JoaKApple - motor do pipeline (baixar, conferir hash, descriptografar).
 
 Autor: Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 
@@ -199,7 +199,7 @@ class PipelineConfig:
     max_workers: int = 4
     download: bool = True
     verify: bool = True
-    # Etapa 3: descriptografar (Apple) ou extrair (Google).
+    # Etapa 3: descriptografar (so' Apple; o Google nao tem etapa 3).
     unpack: bool = True
     log_path: Optional[Path] = None
     provider: Optional["Provider"] = None
@@ -221,30 +221,39 @@ class PipelineConfig:
         return self.output_dir / self.provider.unpack_dir_name
 
 
+def hash_of_stream(
+    fh,
+    total: int,
+    algorithm: str = "sha256",
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> str:
+    """Hash de um arquivo ja aberto (leitura em blocos), com progresso."""
+    hasher = hashlib.new(algorithm)
+    bytes_done = 0
+    last_emit = 0.0
+    while True:
+        data = fh.read(CHUNK_SIZE)
+        if not data:
+            break
+        hasher.update(data)
+        bytes_done += len(data)
+        if on_progress:
+            now = time.monotonic()
+            if now - last_emit >= PROGRESS_THROTTLE_SECONDS:
+                on_progress(bytes_done, total)
+                last_emit = now
+    if on_progress:
+        on_progress(bytes_done, total)  # evento final, garante 100%
+    return hasher.hexdigest()
+
+
 def hash_of_file(
     path: Path,
     algorithm: str = "sha256",
     on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> str:
-    hasher = hashlib.new(algorithm)
-    total = path.stat().st_size
-    bytes_done = 0
-    last_emit = 0.0
     with path.open("rb") as fh:
-        while True:
-            data = fh.read(CHUNK_SIZE)
-            if not data:
-                break
-            hasher.update(data)
-            bytes_done += len(data)
-            if on_progress:
-                now = time.monotonic()
-                if now - last_emit >= PROGRESS_THROTTLE_SECONDS:
-                    on_progress(bytes_done, total)
-                    last_emit = now
-    if on_progress:
-        on_progress(bytes_done, total)  # evento final, garante 100%
-    return hasher.hexdigest()
+        return hash_of_stream(fh, path.stat().st_size, algorithm, on_progress)
 
 
 def cached_file_hash(entry: FileEntry, path: Path) -> Optional[str]:
@@ -358,19 +367,15 @@ def delete_entry_files(
     entry: FileEntry, output_dir: Path, provider: Optional["Provider"] = None
 ) -> list[Path]:
     """Remove do disco os arquivos ja obtidos para ``entry`` (baixado, .part e
-    a copia descriptografada/extraida), sem tocar no restante do lote. Retorna
-    os caminhos removidos."""
+    a copia descriptografada, quando houver — ver Provider.removable_paths),
+    sem tocar no restante do lote. Retorna os caminhos removidos."""
     if provider is None:
         from providers import get_provider
 
         provider = get_provider()
-    output_dir = Path(output_dir)
-    dest = output_dir / entry.file_name
-    part_path = dest.with_suffix(dest.suffix + ".part")
-    unpacked_path = provider.unpacked_path(entry, output_dir)
 
     removed: list[Path] = []
-    for path in (dest, part_path, unpacked_path):
+    for path in provider.removable_paths(entry, Path(output_dir)):
         if path.is_dir():
             shutil.rmtree(path)
             removed.append(path)
@@ -390,9 +395,9 @@ def process_entry(
     on_progress: Optional[Callable[[FileEntry, int, int, str], None]] = None,
 ) -> None:
     provider = config.provider
-    dest = config.output_dir / entry.file_name
+    dest = provider.local_path(entry, config.output_dir)
     unpacked_path = provider.unpacked_path(entry, config.output_dir)
-    needs_unpack = config.unpack and provider.needs_unpack(entry)
+    needs_unpack = config.unpack and provider.has_unpack_step and provider.needs_unpack(entry)
     thread_name = threading.current_thread().name
 
     if needs_unpack and unpacked_path.exists():
@@ -447,7 +452,14 @@ def process_entry(
                 if on_progress
                 else None
             )
-            hash_calculado = hash_of_file(dest, entry.hash_algorithm, on_progress=hash_progress)
+            try:
+                hash_calculado = provider.hash_entry(entry, config.output_dir, on_progress=hash_progress)
+            except Exception as exc:  # noqa: BLE001 - arquivo ilegivel/corrompido nao derruba o lote
+                entry.status = "erro"
+                entry.message = f"falha ao calcular o hash: {exc}"
+                on_update(entry)
+                log(log_line("ERROR", "hash", "falha ao calcular o hash", file=entry.file_name, erro=str(exc)))
+                return
             hash_duration = time.monotonic() - hash_started
             dest_stat = dest.stat()
             entry.computed_hash = hash_calculado
@@ -478,7 +490,7 @@ def process_entry(
     else:
         log(log_line("DEBUG", "hash", "etapa desmarcada pelo usuario", file=entry.file_name))
 
-    # --- descriptografia/extracao (etapa opcional) ---
+    # --- descriptografia (etapa opcional) ---
     if needs_unpack:
         entry.status = provider.unpack_status
         on_update(entry)
@@ -514,7 +526,7 @@ def run_pipeline(
     config.provider.preflight(config, entries)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    if config.unpack:
+    if config.unpack and config.provider.has_unpack_step:
         config.unpacked_dir.mkdir(parents=True, exist_ok=True)
 
     log_lock = threading.Lock()
@@ -532,6 +544,8 @@ def run_pipeline(
             baixar=config.download, verificar=config.verify, abrir=config.unpack,
         )
     )
+
+    config.provider.prepare(config, entries, safe_log)
 
     start = time.monotonic()
     session = _make_session()
