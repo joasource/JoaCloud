@@ -1,5 +1,5 @@
 """
-JoaKApple - interface de linha de comando (Linux).
+JoaCloud - interface de linha de comando (Linux).
 
 Cobre as mesmas funcionalidades da GUI (baixar, verificar, descriptografar,
 listar, excluir e gerar o Termo de Recebimento), para qualquer
@@ -687,7 +687,7 @@ def _cmd_lers(args: argparse.Namespace) -> int:
     client = lers.LersClient(browser)
     try:
         browser.start()
-        print("Faca o login no LERS na janela do navegador que abriu (o JoaKApple espera)...", file=sys.stderr)
+        print("Faca o login no LERS na janela do navegador que abriu (o JoaCloud espera)...", file=sys.stderr)
         client.wait_for_login()
         print("Login reconhecido. Carregando a lista de requests...", file=sys.stderr)
         reqs = client.list_requests()
@@ -747,8 +747,8 @@ def _cmd_lers(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="joakapple",
-        description="JoaKApple (modo texto, Linux) — baixa, verifica, descriptografa e gera o "
+        prog="joacloud",
+        description="JoaCloud (modo texto, Linux) — baixa, verifica, descriptografa e gera o "
         "Termo de Recebimento de retorno de oficios judiciais (Apple, Google).",
     )
     sub = parser.add_subparsers(dest="command")

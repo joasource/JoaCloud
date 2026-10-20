@@ -6,7 +6,7 @@ dist/
 *.log
 log.txt
 GPG_log.txt
-apple_toolkit_log.txt
+joacloud_log.txt
 .venv/
 venv/
 .pytest_cache/

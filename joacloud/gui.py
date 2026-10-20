@@ -1,5 +1,5 @@
 """
-JoaKApple - interface grafica.
+JoaCloud - interface grafica.
 
 Toolkit para baixar, verificar e descriptografar retorno de oficios
 judiciais (Apple, Google).
@@ -37,9 +37,9 @@ import lers
 import providers
 import report
 
-APP_TITLE = "JoaKApple"
+APP_TITLE = "JoaCloud"
 APP_DESCRIPTION = "Toolkit para baixar, verificar e abrir retorno de ofícios judiciais — Apple e Google"
-APP_VERSION = "1.9.0"
+APP_VERSION = "2.0.0"
 AUTHOR_LINE = "Joaquim Ferreira Silva Neto  ·  joaquimfsneto@gmail.com"
 
 
@@ -560,7 +560,7 @@ class LersDialog(ctk.CTkToplevel):
         self.destroy()
 
 
-class JoaKAppleGUI(ctk.CTk):
+class JoaCloudGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("light")
@@ -1602,7 +1602,7 @@ class JoaKAppleGUI(ctk.CTk):
             messagebox.showerror(
                 APP_TITLE,
                 "A biblioteca 'python-docx' não está instalada.\n\n"
-                "Rode: pip install -r apple_toolkit/requirements.txt",
+                "Rode: pip install -r joacloud/requirements.txt",
             )
             return
         except Exception as exc:  # noqa: BLE001
@@ -1616,7 +1616,7 @@ class JoaKAppleGUI(ctk.CTk):
 
 
 def main():
-    app = JoaKAppleGUI()
+    app = JoaCloudGUI()
     app.mainloop()
 
 

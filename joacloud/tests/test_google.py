@@ -238,7 +238,7 @@ def test_run_pipeline_google_keeps_original_zips_without_extracting(lers_folder,
     # O destino tem so' copias identicas do que veio do LERS: nenhum ZIP
     # interno tirado do de producao, nenhuma pasta extraida.
     assert sorted(p.name for p in out.iterdir()) == sorted(
-        [PRODUCTION, "Valores de Hash 999999999.pdf", "Carta 999999999.pdf", "joakapple_log.txt"]
+        [PRODUCTION, "Valores de Hash 999999999.pdf", "Carta 999999999.pdf", "joacloud_log.txt"]
     )
     for name in (PRODUCTION, "Valores de Hash 999999999.pdf", "Carta 999999999.pdf"):
         assert (out / name).read_bytes() == (folder / name).read_bytes()
@@ -305,7 +305,7 @@ def test_run_pipeline_google_output_dir_same_as_source(lers_folder):
     before = {p.name: p.read_bytes() for p in folder.iterdir()}
     _, _, summary = _run(folder, folder)
     assert summary.concluidos == 2 and summary.erros == 0
-    after = {p.name: p.read_bytes() for p in folder.iterdir() if p.name != "joakapple_log.txt"}
+    after = {p.name: p.read_bytes() for p in folder.iterdir() if p.name != "joacloud_log.txt"}
     assert after == before
 
 

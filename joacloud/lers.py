@@ -1,9 +1,9 @@
 """
-JoaKApple - login e download automatico do Google LERS (lers.google.com).
+JoaCloud - login e download automatico do Google LERS (lers.google.com).
 
 O LERS so' aceita login Google com 2FA (e reautenticacao periodica), entao o
 app nao pede senha nenhuma: abre o navegador instalado (Edge no Windows;
-Chrome/Chromium/Brave/Edge no Linux) com um perfil proprio do JoaKApple e a
+Chrome/Chromium/Brave/Edge no Linux) com um perfil proprio do JoaCloud e a
 porta de depuracao (CDP) ligada, o usuario faz o login normalmente, e o app
 conversa com a pagina do LERS pelo CDP:
 
@@ -82,12 +82,12 @@ def find_browser() -> Optional[str]:
 
 
 def default_profile_dir() -> Path:
-    """Perfil do navegador so' do JoaKApple (mantem o login entre usos)."""
+    """Perfil do navegador so' do JoaCloud (mantem o login entre usos)."""
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     else:
         base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return base / "JoaKApple" / "navegador-lers"
+    return base / "JoaCloud" / "navegador-lers"
 
 
 def _free_port() -> int:
@@ -183,10 +183,10 @@ class LersBrowser:
 
     @property
     def _port_file(self) -> Path:
-        return self.profile_dir / "joakapple-cdp-port"
+        return self.profile_dir / "joacloud-cdp-port"
 
     def _known_ports(self) -> list[int]:
-        """Portas de uma instancia ja aberta neste perfil: a que o JoaKApple
+        """Portas de uma instancia ja aberta neste perfil: a que o JoaCloud
         anotou e a que o Chromium as vezes grava em DevToolsActivePort."""
         ports = []
         for path in (self._port_file, self.profile_dir / "DevToolsActivePort"):
@@ -204,7 +204,7 @@ class LersBrowser:
             return False
 
     def start(self, url: str = LERS_URL, timeout: float = 30) -> None:
-        """Abre o navegador no LERS — ou reaproveita o que o JoaKApple ja abriu
+        """Abre o navegador no LERS — ou reaproveita o que o JoaCloud ja abriu
         (o perfil so' aceita uma instancia por vez)."""
         for port in self._known_ports():
             if self._responding(port):
@@ -236,7 +236,7 @@ class LersBrowser:
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise LersError(
-                    "O navegador fechou logo ao abrir. Se ja houver uma janela do JoaKApple "
+                    "O navegador fechou logo ao abrir. Se ja houver uma janela do JoaCloud "
                     "com o LERS aberta, feche-a e tente de novo."
                 )
             if self._responding(self.port):
@@ -278,8 +278,8 @@ class LersBrowser:
 # X-XSRF-TOKEN; o token vem no erro 400 da primeira chamada sem ele.
 
 _API_JS = r"""
-window.__joakapple = window.__joakapple || {};
-window.__joakapple.call = async (method, payload) => {
+window.__joacloud = window.__joacloud || {};
+window.__joacloud.call = async (method, payload) => {
   const base = '/api/u/' + ((window.LERS_GLOBALS || {}).sessionIndex || '0') + '/';
   const go = (tok) => fetch(base + method, {
     method: 'POST', credentials: 'same-origin',
@@ -288,11 +288,11 @@ window.__joakapple.call = async (method, payload) => {
     body: 'data=' + encodeURIComponent(JSON.stringify(payload)),
   });
   const strip = (t) => t.slice(t.indexOf('\n') + 1);
-  let r = await go(window.__joakapple.xsrf);
+  let r = await go(window.__joacloud.xsrf);
   let t = await r.text();
   if (r.status === 400 && t.includes('"xsrf"')) {
-    window.__joakapple.xsrf = JSON.parse(strip(t))[0][10][0]["48448350"][1];
-    r = await go(window.__joakapple.xsrf);
+    window.__joacloud.xsrf = JSON.parse(strip(t))[0][10][0]["48448350"][1];
+    r = await go(window.__joacloud.xsrf);
     t = await r.text();
   }
   return JSON.stringify([r.status, strip(t)]);
@@ -392,7 +392,7 @@ def _safe_file_name(name: str) -> bool:
 
 
 class LersClient:
-    """Conversa com o LERS pela aba logada no navegador do JoaKApple."""
+    """Conversa com o LERS pela aba logada no navegador do JoaCloud."""
 
     def __init__(self, browser: LersBrowser):
         self.browser = browser
@@ -426,7 +426,7 @@ class LersClient:
     def _call(self, method: str, payload: list) -> str:
         if self._page is None:
             raise LersError("Sem sessao no LERS: faca o login primeiro.")
-        raw = self._page.evaluate(_API_JS + f"window.__joakapple.call({json.dumps(method)}, {json.dumps(payload)})")
+        raw = self._page.evaluate(_API_JS + f"window.__joacloud.call({json.dumps(method)}, {json.dumps(payload)})")
         status, body = json.loads(raw)
         if status == 401 or status == 403:
             raise LersError("O LERS recusou o acesso (sessao expirada?). Faca o login de novo.")

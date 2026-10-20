@@ -1,5 +1,5 @@
 """
-JoaKApple - registro dos provedores de nuvem suportados (Apple, Google...).
+JoaCloud - registro dos provedores de nuvem suportados (Apple, Google...).
 
 Cada provedor sabe de onde vem a lista de arquivos (CSV da Apple, pasta com o
 retorno do LERS do Google), qual algoritmo de hash o provedor usa, e como

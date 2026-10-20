@@ -1,5 +1,5 @@
 """
-JoaKApple - gerador do Termo de Recebimento e Identificacao de Evidencia
+JoaCloud - gerador do Termo de Recebimento e Identificacao de Evidencia
 Telematica.
 
 Preenche o modelo fornecido pelo usuario com os dados digitados na GUI e com

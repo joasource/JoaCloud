@@ -1,10 +1,19 @@
 # Changelog
 
-Histórico de versões do JoaKApple. Formato baseado no
+Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
-## [Não lançado]
+## [2.0.0] - 2026-10-20
+
+### Alterado (incompatível)
+- O programa e o projeto passam a se chamar **JoaCloud** (antes JoaKApple),
+  porque deixaram de ser só para a Apple:
+  - executáveis `JoaCloud.exe` e `JoaCloud-x86_64.AppImage`; comando da CLI
+    `joacloud`; código-fonte em `joacloud/` (antes `apple_toolkit/`);
+  - ícone novo, com monograma "C";
+  - o log de cada pasta de destino passa a ser `joacloud_log.txt` (pastas
+    antigas mantêm o `joakapple_log.txt` que já tinham).
 
 ### Adicionado
 - Suporte ao **Google** (retorno do LERS), além da Apple. Na GUI, o seletor
@@ -23,9 +32,9 @@ seguem [SemVer](https://semver.org/lang/pt-BR/).
     cópia no destino, nunca o original do LERS.
 - **Baixar do LERS** (Google): login e download automático do request.
   Na GUI, o botão "Baixar do LERS…" ao lado da pasta de origem; na CLI,
-  `joakapple lers` (`--list`, `--request <id ou Ref. Interna>`).
+  `joacloud lers` (`--list`, `--request <id ou Ref. Interna>`).
   - Abre o navegador instalado (Edge/Chrome/Chromium/Brave) com um perfil
-    próprio do JoaKApple; o login (com 2FA) é feito ali mesmo e fica salvo
+    próprio do JoaCloud; o login (com 2FA) é feito ali mesmo e fica salvo
     para as próximas vezes. Senha e cookies nunca passam pelo app.
   - Lista os requests da conta, com os de arquivos disponíveis primeiro, e
     baixa os ZIPs de produção e os PDFs pelo gerenciador de downloads do

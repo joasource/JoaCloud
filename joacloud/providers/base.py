@@ -1,5 +1,5 @@
 """
-JoaKApple - interface comum dos provedores de nuvem.
+JoaCloud - interface comum dos provedores de nuvem.
 
 Copyright (C) 2026 Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 

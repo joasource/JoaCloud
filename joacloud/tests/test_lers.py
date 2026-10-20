@@ -71,10 +71,10 @@ def test_find_request_by_id_or_google_ref():
     assert cli._find_request(reqs, "333") is None
 
 
-def test_known_ports_reads_joakapple_and_chromium_files(tmp_path):
+def test_known_ports_reads_joacloud_and_chromium_files(tmp_path):
     browser = lers.LersBrowser(browser="/bin/true", profile_dir=tmp_path)
     assert browser._known_ports() == []
-    (tmp_path / "joakapple-cdp-port").write_text("41000")
+    (tmp_path / "joacloud-cdp-port").write_text("41000")
     (tmp_path / "DevToolsActivePort").write_text("42000\n/devtools/browser/x")
     assert browser._known_ports() == [41000, 42000]
 
@@ -189,3 +189,4 @@ def test_download_files_rejects_path_in_name(tmp_path):
     client, _ = _client({}, rapt=True)
     with pytest.raises(lers.LersError, match="suspeito"):
         client.download_files(111, bad, tmp_path)
+

@@ -93,7 +93,7 @@ def test_load_entries_no_valid_rows_raises(tmp_path):
 def test_pipeline_config_default_log_path(tmp_path):
     config = core.PipelineConfig(source=tmp_path / "x.csv", output_dir=tmp_path / "out")
 
-    assert config.log_path == tmp_path / "out" / "joakapple_log.txt"
+    assert config.log_path == tmp_path / "out" / "joacloud_log.txt"
     assert config.unpacked_dir == tmp_path / "out" / "decriptado"
 
 

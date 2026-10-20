@@ -1,5 +1,5 @@
 """
-JoaKApple - motor do pipeline (baixar, conferir hash, descriptografar).
+JoaCloud - motor do pipeline (baixar, conferir hash, descriptografar).
 
 Autor: Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 
@@ -212,7 +212,7 @@ class PipelineConfig:
         if self.provider is None:
             self.provider = get_provider()
         if self.log_path is None:
-            self.log_path = self.output_dir / "joakapple_log.txt"
+            self.log_path = self.output_dir / "joacloud_log.txt"
         else:
             self.log_path = Path(self.log_path)
 

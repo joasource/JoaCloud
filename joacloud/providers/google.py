@@ -1,5 +1,5 @@
 """
-JoaKApple - provedor Google: retorno baixado do LERS (lers.google.com).
+JoaCloud - provedor Google: retorno baixado do LERS (lers.google.com).
 
 O Google nao fornece CSV. Pelo LERS chegam, por request:
 

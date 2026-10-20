@@ -1,5 +1,5 @@
 """
-JoaKApple - provedor Apple: CSV com links de download, SHA-256 e pacotes .gpg.
+JoaCloud - provedor Apple: CSV com links de download, SHA-256 e pacotes .gpg.
 
 Copyright (C) 2026 Joaquim Ferreira Silva Neto <joaquimfsneto@gmail.com>
 

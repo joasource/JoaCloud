@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=JoaCloud
+Comment=Toolkit para baixar, verificar e descriptografar retorno de oficios judiciais (Apple, Google)
+Exec=JoaCloud
+Icon=JoaCloud
+Categories=Utility;
+Terminal=false
