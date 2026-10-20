@@ -40,9 +40,9 @@ jobs:
           set -e
           TAG_VERSION="${GITHUB_REF_NAME#v}"
 
-          GUI_VERSION=$(grep -oP '(?<=^APP_VERSION = ")[^"]+' apple_toolkit/gui.py)
+          GUI_VERSION=$(grep -oP '(?<=^APP_VERSION = ")[^"]+' joacloud/gui.py)
           if [ "$GUI_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::APP_VERSION em apple_toolkit/gui.py e '$GUI_VERSION', mas a tag publicada e 'v$TAG_VERSION'. Atualize APP_VERSION antes de fazer a tag."
+            echo "::error::APP_VERSION em joacloud/gui.py e '$GUI_VERSION', mas a tag publicada e 'v$TAG_VERSION'. Atualize APP_VERSION antes de fazer a tag."
             exit 1
           fi
 
@@ -70,7 +70,7 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install -r apple_toolkit/requirements.txt
+          pip install -r joacloud/requirements.txt
           pip install pyinstaller
 
       - name: Baixar e extrair GnuPG para embutir (sem executar instalador)
@@ -91,20 +91,20 @@ jobs:
 
       - name: Compilar executavel Windows
         run: |
-          pyinstaller --onefile --windowed --name JoaKApple `
+          pyinstaller --onefile --windowed --name JoaCloud `
             --icon "${{ github.workspace }}\packaging\windows\icon.ico" `
             --collect-data customtkinter `
             --collect-data docx `
             --add-binary "${{ github.workspace }}\gnupg-bin;gnupg-bin" `
             --add-data "${{ github.workspace }}\packaging\linux\icon.png;." `
             --distpath dist --workpath build --specpath build `
-            apple_toolkit/gui.py
+            joacloud/gui.py
 
       - name: Enviar artefato
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: dist/JoaKApple.exe
+          path: dist/JoaCloud.exe
 
   build-linux:
     needs: version
@@ -121,28 +121,28 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install -r apple_toolkit/requirements.txt
+          pip install -r joacloud/requirements.txt
           pip install pyinstaller
 
       - name: Compilar binario Linux
         run: |
-          pyinstaller --onedir --windowed --name JoaKApple \
+          pyinstaller --onedir --windowed --name JoaCloud \
             --icon "${{ github.workspace }}/packaging/linux/icon.png" \
             --collect-data customtkinter \
             --collect-data docx \
             --add-data "${{ github.workspace }}/packaging/linux/icon.png:." \
             --distpath dist --workpath build --specpath build \
-            apple_toolkit/app.py
+            joacloud/app.py
 
       - name: Montar AppDir
         run: |
           set -e
           mkdir -p AppDir/usr/bin
-          cp -r dist/JoaKApple AppDir/usr/bin/JoaKApple
-          cp packaging/linux/JoaKApple.desktop AppDir/JoaKApple.desktop
-          cp packaging/linux/icon.png AppDir/JoaKApple.png
+          cp -r dist/JoaCloud AppDir/usr/bin/JoaCloud
+          cp packaging/linux/JoaCloud.desktop AppDir/JoaCloud.desktop
+          cp packaging/linux/icon.png AppDir/JoaCloud.png
           cp packaging/linux/AppRun AppDir/AppRun
-          chmod +x AppDir/AppRun AppDir/usr/bin/JoaKApple/JoaKApple
+          chmod +x AppDir/AppRun AppDir/usr/bin/JoaCloud/JoaCloud
 
       - name: Baixar appimagetool
         run: |
@@ -151,15 +151,18 @@ jobs:
 
       - name: Gerar AppImage
         run: |
-          ./appimagetool --appimage-extract-and-run AppDir dist/JoaKApple-x86_64.AppImage
+          ./appimagetool --appimage-extract-and-run AppDir dist/JoaCloud-x86_64.AppImage
 
       - name: Enviar artefato
         uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
-          path: dist/JoaKApple-x86_64.AppImage
+          path: dist/JoaCloud-x86_64.AppImage
 
   release:
+    # Disparo manual (workflow_dispatch) so' gera os executaveis como
+    # artefatos do Actions, pra teste: release publica so' com tag vX.Y.Z.
+    if: github.event_name == 'push'
     needs: [version, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
@@ -172,12 +175,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.version }}
-          name: JoaKApple ${{ needs.version.outputs.version }}
+          name: JoaCloud ${{ needs.version.outputs.version }}
           body: |
-            Toolkit para baixar, verificar e descriptografar retorno de ofícios judiciais da Apple.
+            Toolkit para baixar, verificar e descriptografar retorno de ofícios judiciais da Apple e do Google.
 
             Autor: Joaquim Ferreira Silva Neto — joaquimfsneto@gmail.com
           generate_release_notes: true
           files: |
-            artifacts/windows-exe/JoaKApple.exe
-            artifacts/linux-appimage/JoaKApple-x86_64.AppImage
+            artifacts/windows-exe/JoaCloud.exe
+            artifacts/linux-appimage/JoaCloud-x86_64.AppImage

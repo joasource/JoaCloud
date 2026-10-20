@@ -1,8 +1,59 @@
 # Changelog
 
-Histórico de versões do JoaKApple. Formato baseado no
+Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
+
+## [2.0.0] - 2026-10-20
+
+### Alterado (incompatível)
+- O programa e o projeto passam a se chamar **JoaCloud** (antes JoaKApple),
+  porque deixaram de ser só para a Apple:
+  - executáveis `JoaCloud.exe` e `JoaCloud-x86_64.AppImage`; comando da CLI
+    `joacloud`; código-fonte em `joacloud/` (antes `apple_toolkit/`);
+  - ícone novo, com monograma "C";
+  - o log de cada pasta de destino passa a ser `joacloud_log.txt` (pastas
+    antigas mantêm o `joakapple_log.txt` que já tinham).
+
+### Adicionado
+- Suporte ao **Google** (retorno do LERS), além da Apple. Na GUI, o seletor
+  "Provedor" (Apple | Google) troca a origem dos arquivos, as etapas e o
+  Termo; na CLI, `--provider google` (com `--source` como apelido de `--csv`).
+  - A origem é a pasta com o que foi baixado do LERS: os ZIPs de produção
+    e o PDF "Valores de Hash".
+  - Nada é extraído nem descompactado em disco: os dados ficam nos ZIPs
+    originais, como o Google entregou.
+  - **Baixar** copia os ZIPs de produção e os PDFs para o destino, byte a
+    byte (se o destino for a própria pasta do LERS, não copia nada).
+  - **Verificar** calcula o SHA-512 de cada ZIP de dados lendo-o direto de
+    dentro do ZIP de produção e confere contra o PDF de hashes do Google
+    (lido com `pypdf`, nova dependência).
+  - Não há etapa 3 para o Google; o card some da GUI. "Excluir" remove só a
+    cópia no destino, nunca o original do LERS.
+- **Baixar do LERS** (Google): login e download automático do request.
+  Na GUI, o botão "Baixar do LERS…" ao lado da pasta de origem; na CLI,
+  `joacloud lers` (`--list`, `--request <id ou Ref. Interna>`).
+  - Abre o navegador instalado (Edge/Chrome/Chromium/Brave) com um perfil
+    próprio do JoaCloud; o login (com 2FA) é feito ali mesmo e fica salvo
+    para as próximas vezes. Senha e cookies nunca passam pelo app.
+  - Lista os requests da conta, com os de arquivos disponíveis primeiro, e
+    baixa os ZIPs de produção e os PDFs pelo gerenciador de downloads do
+    navegador, exatamente como o LERS entrega, conferindo o tamanho de cada
+    um. Se o Google pedir para confirmar a senha antes do download, isso
+    acontece no navegador, uma vez por sessão.
+  - A pasta baixada vira a origem do pipeline. Pela CLI, os hashes já são
+    conferidos em seguida (`--no-verify` desliga).
+  - Nova dependência: `websocket-client`.
+- O PDF de hashes do Google também é reconhecido quando os valores vêm sem
+  o rótulo `SHA512-` (formato da carta "Valores de Hash dos Arquivos
+  Produzidos").
+- Termo de Recebimento com provedor, algoritmo de hash e formato dos
+  pacotes de acordo com o provedor (Google LLC, SHA-512, ZIP).
+
+### Alterado
+- O que é específico de cada nuvem saiu do `core.py` para `providers/`
+  (`apple.py`, `google.py`); o motor do pipeline ficou genérico. O
+  comportamento com a Apple não muda.
 
 ## [1.9.0] - 2026-09-18
 

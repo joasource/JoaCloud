@@ -8,6 +8,7 @@ import requests_mock
 
 import cli
 import core
+from providers import apple
 
 
 def _write_csv(path: Path, header: list[str], rows: list[list[str]]) -> None:
@@ -102,9 +103,9 @@ def test_main_no_command_prints_help_and_exits_fatal(capsys):
 
 def _entries():
     return [
-        core.FileEntry(file_name="a.txt", file_link="http://x/a", sha256_expected=None),
-        core.FileEntry(file_name="b.txt.gpg", file_link="http://x/b", sha256_expected=None),
-        core.FileEntry(file_name="c.pdf", file_link="http://x/c", sha256_expected=None),
+        core.FileEntry(file_name="a.txt", file_link="http://x/a", expected_hash=None),
+        core.FileEntry(file_name="b.txt.gpg", file_link="http://x/b", expected_hash=None),
+        core.FileEntry(file_name="c.pdf", file_link="http://x/c", expected_hash=None),
     ]
 
 
@@ -257,7 +258,7 @@ def test_cmd_run_decrypt_without_passphrase_source_exit_fatal(tmp_path, monkeypa
     )
 
     monkeypatch.setattr(sys, "stdin", _FakeStdin("", tty=False))
-    monkeypatch.setattr(core, "check_gpg_available", lambda: True)
+    monkeypatch.setattr(apple, "check_gpg_available", lambda: True)
 
     code = cli.main(
         [

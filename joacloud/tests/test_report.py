@@ -7,18 +7,18 @@ import report
 def test_compute_hash_rows_mixes_found_and_missing_files(tmp_path):
     (tmp_path / "a.pdf").write_bytes(b"conteudo")
     entries = [
-        core.FileEntry(file_name="a.pdf", file_link="https://example.com/a", sha256_expected=None),
-        core.FileEntry(file_name="faltando.zip", file_link="https://example.com/b", sha256_expected=None),
+        core.FileEntry(file_name="a.pdf", file_link="https://example.com/a", expected_hash=None),
+        core.FileEntry(file_name="faltando.zip", file_link="https://example.com/b", expected_hash=None),
     ]
 
     rows = report.compute_hash_rows(entries, tmp_path)
 
     assert rows[0].file_name == "a.pdf"
-    assert rows[0].sha256 == core.sha256_of_file(tmp_path / "a.pdf")
+    assert rows[0].digest == core.hash_of_file(tmp_path / "a.pdf")
     assert rows[0].size_bytes == len(b"conteudo")
 
     assert rows[1].file_name == "faltando.zip"
-    assert rows[1].sha256 is None
+    assert rows[1].digest is None
     assert rows[1].size_bytes == 0
 
 
@@ -30,10 +30,10 @@ def test_compute_hash_rows_cached_reuses_valid_cache_and_computes_the_rest(tmp_p
     pending_path.write_bytes(b"nunca calculado ainda")
 
     cached_entry = core.FileEntry(
-        file_name="cached.pdf", file_link="https://example.com/a", sha256_expected=None,
-        sha256_computed="cafecafe", sha256_computed_stat=(stat.st_size, stat.st_mtime),
+        file_name="cached.pdf", file_link="https://example.com/a", expected_hash=None,
+        computed_hash="cafecafe", computed_hash_stat=(stat.st_size, stat.st_mtime),
     )
-    pending_entry = core.FileEntry(file_name="pending.pdf", file_link="https://example.com/b", sha256_expected=None)
+    pending_entry = core.FileEntry(file_name="pending.pdf", file_link="https://example.com/b", expected_hash=None)
 
     progress_calls: list[str] = []
     rows = report.compute_hash_rows_cached(
@@ -42,8 +42,8 @@ def test_compute_hash_rows_cached_reuses_valid_cache_and_computes_the_rest(tmp_p
     )
 
     by_name = {row.file_name: row for row in rows}
-    assert by_name["cached.pdf"].sha256 == "cafecafe"
-    assert by_name["pending.pdf"].sha256 == core.sha256_of_file(pending_path)
+    assert by_name["cached.pdf"].digest == "cafecafe"
+    assert by_name["pending.pdf"].digest == core.hash_of_file(pending_path)
     # so o arquivo pendente passa pelo calculo (e reporta progresso) — o cacheado eh reaproveitado.
     assert "cached.pdf" not in progress_calls
 
@@ -53,15 +53,15 @@ def test_compute_hash_rows_cached_recomputes_when_file_changed_after_cache(tmp_p
     path.write_bytes(b"conteudo original")
     stat = path.stat()
     entry = core.FileEntry(
-        file_name="a.pdf", file_link="https://example.com/a", sha256_expected=None,
-        sha256_computed="hashantigo", sha256_computed_stat=(stat.st_size, stat.st_mtime),
+        file_name="a.pdf", file_link="https://example.com/a", expected_hash=None,
+        computed_hash="hashantigo", computed_hash_stat=(stat.st_size, stat.st_mtime),
     )
     path.write_bytes(b"conteudo mudou depois do cache")
 
     rows = report.compute_hash_rows_cached([entry], tmp_path)
 
-    assert rows[0].sha256 == core.sha256_of_file(path)
-    assert rows[0].sha256 != "hashantigo"
+    assert rows[0].digest == core.hash_of_file(path)
+    assert rows[0].digest != "hashantigo"
 
 
 def test_humanize_bytes():
@@ -86,8 +86,8 @@ def test_render_report_fills_placeholders_when_data_missing():
 
 def test_render_report_fills_real_values_and_marks_checked_boxes():
     rows = [
-        report.HashRow(file_name="a.pdf", sha256="deadbeef", size_bytes=1024),
-        report.HashRow(file_name="faltando.zip", sha256=None, size_bytes=0),
+        report.HashRow(file_name="a.pdf", digest="deadbeef", size_bytes=1024),
+        report.HashRow(file_name="faltando.zip", digest=None, size_bytes=0),
     ]
     data = report.ReportData(
         numero_processo="0001234-56.2026.8.26.0000",
@@ -147,7 +147,7 @@ def test_render_report_html_escapes_gpg_password():
 
 
 def test_render_report_html_uses_arial_12_and_line_spacing_1_5():
-    rows = [report.HashRow(file_name="a.pdf", sha256="deadbeef", size_bytes=1024)]
+    rows = [report.HashRow(file_name="a.pdf", digest="deadbeef", size_bytes=1024)]
     data = report.ReportData(numero_processo="0001234", recebido_email=True, hash_rows=rows)
 
     out = report.render_report_html(data)
@@ -176,8 +176,8 @@ def test_build_docx_generates_a_valid_document_with_arial_12_and_spacing_1_5(tmp
     from docx.shared import Pt
 
     rows = [
-        report.HashRow(file_name="a.pdf", sha256="deadbeef", size_bytes=1024),
-        report.HashRow(file_name="faltando.zip", sha256=None, size_bytes=0),
+        report.HashRow(file_name="a.pdf", digest="deadbeef", size_bytes=1024),
+        report.HashRow(file_name="faltando.zip", digest=None, size_bytes=0),
     ]
     data = report.ReportData(
         numero_processo="0001234-56.2026.8.26.0000",

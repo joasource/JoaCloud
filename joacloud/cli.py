@@ -1,8 +1,9 @@
 """
-JoaKApple - interface de linha de comando (Linux).
+JoaCloud - interface de linha de comando (Linux).
 
 Cobre as mesmas funcionalidades da GUI (baixar, verificar, descriptografar,
-listar, excluir e gerar o Termo de Recebimento), sem depender de
+listar, excluir e gerar o Termo de Recebimento), para qualquer
+provedor (--provider apple|google), sem depender de
 tkinter/customtkinter, para rodar em qualquer maquina Linux mesmo sem
 X11/Tk instalado (ex.: servidor, container). So existe no build Linux: o
 .exe do Windows continua sendo compilado a partir de gui.py, ver
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 import core
+import providers
 import report
 
 EXIT_OK = 0
@@ -282,14 +284,14 @@ class TerminalReporter:
 # --------------------------------------------------------------------- run
 
 def _menu_run_params(
-    args: argparse.Namespace,
+    args: argparse.Namespace, provider
 ) -> tuple[Path, Path, bool, bool, bool, int, list[core.FileEntry]]:
     csv_path: Optional[Path] = args.csv
     while True:
         if not csv_path:
-            csv_path = Path(_prompt_required("Caminho do CSV da Apple"))
+            csv_path = Path(_prompt_required(provider.source_label))
         try:
-            entries = core.load_entries(csv_path)
+            entries = provider.load_entries(csv_path)
             break
         except core.PipelineError as exc:
             print(f"Erro: {exc}", file=sys.stderr)
@@ -300,7 +302,7 @@ def _menu_run_params(
     print("\nETAPAS DO PIPELINE")
     download = _prompt_bool("Baixar", args.download)
     verify = _prompt_bool("Verificar hash", args.verify)
-    decrypt = _prompt_bool("Descriptografar", args.decrypt)
+    decrypt = _prompt_bool(provider.unpack_label, args.decrypt) if provider.has_unpack_step else False
 
     workers_str = _prompt("Downloads simultaneos", str(args.workers))
     try:
@@ -316,15 +318,16 @@ def _menu_run_params(
 
 def _cmd_run(args: argparse.Namespace) -> int:
     use_color = _use_color(args)
+    provider = providers.get_provider(args.provider)
     interactive = args.menu or not (args.csv and args.output_dir)
 
     try:
         if interactive:
-            csv_path, output_dir, download, verify, decrypt, workers, selected = _menu_run_params(args)
+            csv_path, output_dir, download, verify, decrypt, workers, selected = _menu_run_params(args, provider)
         else:
             csv_path, output_dir = args.csv, args.output_dir
             try:
-                entries = core.load_entries(csv_path)
+                entries = provider.load_entries(csv_path)
             except core.PipelineError as exc:
                 print(f"Erro: {exc}", file=sys.stderr)
                 return EXIT_FATAL
@@ -341,6 +344,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         return EXIT_FATAL
 
+    decrypt = decrypt and provider.has_unpack_step
     if not (download or verify or decrypt):
         print("Erro: selecione ao menos uma etapa (--download/--verify/--decrypt).", file=sys.stderr)
         return EXIT_FATAL
@@ -350,10 +354,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return EXIT_FATAL
 
     passphrase = ""
-    if decrypt and any(e.is_encrypted for e in selected):
-        if not core.check_gpg_available():
-            print("Erro: o executavel 'gpg' nao foi encontrado no PATH.", file=sys.stderr)
+    if decrypt and any(provider.needs_unpack(e) for e in selected):
+        missing_tool = provider.missing_tool_message()
+        if missing_tool:
+            print(f"Erro: {missing_tool}", file=sys.stderr)
             return EXIT_FATAL
+    if decrypt and provider.needs_passphrase and any(provider.needs_unpack(e) for e in selected):
         try:
             passphrase = _resolve_passphrase(args)
         except core.PipelineError as exc:
@@ -368,8 +374,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     if interactive and not args.yes:
         print(
-            f"\nResumo: {len(selected)} arquivo(s)  ·  baixar={download}  ·  verificar={verify}  ·  "
-            f"descriptografar={decrypt}  ·  workers={workers}"
+            f"\nResumo: {provider.display_name}  ·  {len(selected)} arquivo(s)  ·  baixar={download}  ·  "
+            f"verificar={verify}"
+            + (f"  ·  {provider.unpack_label.lower()}={decrypt}" if provider.has_unpack_step else "")
+            + f"  ·  workers={workers}"
         )
         try:
             if not _prompt_bool("Iniciar", True):
@@ -383,13 +391,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return EXIT_FATAL
 
     config = core.PipelineConfig(
-        csv_path=csv_path,
+        source=csv_path,
         output_dir=output_dir,
         passphrase=passphrase,
         max_workers=workers,
         download=download,
         verify=verify,
-        decrypt=decrypt,
+        unpack=decrypt,
+        provider=provider,
     )
 
     reporter = TerminalReporter(len(selected), use_color=use_color, quiet=args.quiet)
@@ -428,10 +437,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
 # -------------------------------------------------------------------- list
 
 def _cmd_list(args: argparse.Namespace) -> int:
+    provider = providers.get_provider(args.provider)
     csv_path = args.csv
     try:
         if args.menu or not csv_path:
-            csv_path = csv_path or Path(_prompt_required("Caminho do CSV da Apple"))
+            csv_path = csv_path or Path(_prompt_required(provider.source_label))
     except KeyboardInterrupt:
         print()
         return EXIT_CANCELLED
@@ -440,7 +450,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return EXIT_FATAL
 
     try:
-        entries = core.load_entries(csv_path)
+        entries = provider.load_entries(csv_path)
     except core.PipelineError as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         return EXIT_FATAL
@@ -453,7 +463,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         if output_dir and (Path(output_dir) / entry.file_name).exists():
             tags.append("ja em disco")
         tag_text = f"  [{', '.join(tags)}]" if tags else ""
-        hash_info = entry.sha256_expected or "(sem hash no CSV)"
+        hash_info = entry.expected_hash or "(sem hash informado pelo provedor)"
         print(f"{entry.file_name}{tag_text}  ·  {entry.file_link}  ·  {hash_info}")
 
     print(f"\n{len(entries)} arquivo(s) no total.")
@@ -463,14 +473,15 @@ def _cmd_list(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ delete
 
 def _cmd_delete(args: argparse.Namespace) -> int:
+    provider = providers.get_provider(args.provider)
     csv_path = args.csv
     output_dir = args.output_dir
     interactive = args.menu or not (csv_path and output_dir and args.only)
 
     try:
         if not csv_path:
-            csv_path = Path(_prompt_required("Caminho do CSV da Apple"))
-        entries = core.load_entries(csv_path)
+            csv_path = Path(_prompt_required(provider.source_label))
+        entries = provider.load_entries(csv_path)
         if not output_dir:
             output_dir = Path(_prompt_required("Pasta de destino"))
 
@@ -497,7 +508,7 @@ def _cmd_delete(args: argparse.Namespace) -> int:
         names = ", ".join(e.file_name for e in selected)
         try:
             confirm = input(
-                f"Excluir do disco os arquivos ja baixados/descriptografados de: {names}\n"
+                f"Excluir do disco os arquivos ja obtidos (e a copia aberta) de: {names}\n"
                 "Essa acao nao pode ser desfeita. Confirma? (s/N): "
             ).strip().lower()
         except KeyboardInterrupt:
@@ -512,7 +523,7 @@ def _cmd_delete(args: argparse.Namespace) -> int:
 
     total_removed = 0
     for entry in selected:
-        removed = core.delete_entry_files(entry, Path(output_dir))
+        removed = core.delete_entry_files(entry, Path(output_dir), provider)
         total_removed += len(removed)
         status = f"{len(removed)} arquivo(s) removido(s)" if removed else "nada encontrado em disco"
         print(f"{entry.file_name}: {status}")
@@ -524,6 +535,7 @@ def _cmd_delete(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ report
 
 def _cmd_report(args: argparse.Namespace) -> int:
+    provider = providers.get_provider(args.provider)
     interactive = args.menu
     now = datetime.now()
 
@@ -569,14 +581,14 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
             print("\n3. ESPECIFICACOES TECNICAS")
             if not csv_path:
-                csv_str = _prompt("CSV da Apple (opcional, p/ calcular hashes)", "")
+                csv_str = _prompt(f"{provider.source_label} (opcional, p/ calcular hashes)", "")
                 csv_path = Path(csv_str) if csv_str else None
             if not output_dir:
                 out_dir_str = _prompt("Pasta de destino (opcional, p/ calcular hashes)", "")
                 output_dir = Path(out_dir_str) if out_dir_str else None
             if csv_path and output_dir:
                 try:
-                    entries = core.load_entries(Path(csv_path))
+                    entries = provider.load_entries(Path(csv_path))
                 except core.PipelineError as exc:
                     print(f"Erro: {exc}", file=sys.stderr)
                     return EXIT_FATAL
@@ -618,12 +630,12 @@ def _cmd_report(args: argparse.Namespace) -> int:
             selected = selected_entries
         else:
             try:
-                entries = core.load_entries(Path(csv_path))
+                entries = provider.load_entries(Path(csv_path))
             except core.PipelineError as exc:
                 print(f"Erro: {exc}", file=sys.stderr)
                 return EXIT_FATAL
             selected = _select_entries(entries, args.only, args.exclude, args.pattern)
-        hash_rows = report.compute_hash_rows(selected, Path(output_dir))
+        hash_rows = report.compute_hash_rows(selected, Path(output_dir), provider)
 
     data = report.ReportData(
         numero_processo=values["numero_processo"],
@@ -640,6 +652,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         disponibiliza_original=values["disponibiliza_original"],
         disponibiliza_processada=values["disponibiliza_processada"],
         hash_rows=hash_rows,
+        **report.provider_fields(provider),
     )
 
     if fmt == "docx":
@@ -660,22 +673,105 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ------------------------------------------------------------------ lers
+
+def _find_request(reqs: list, wanted: str):
+    """Request pelo id interno do LERS ou pela Ref. Interna do Google."""
+    return next((r for r in reqs if wanted in (str(r.request_id), r.google_ref)), None)
+
+
+def _cmd_lers(args: argparse.Namespace) -> int:
+    import lers
+
+    browser = lers.LersBrowser()
+    client = lers.LersClient(browser)
+    try:
+        browser.start()
+        print("Faca o login no LERS na janela do navegador que abriu (o JoaCloud espera)...", file=sys.stderr)
+        client.wait_for_login()
+        print("Login reconhecido. Carregando a lista de requests...", file=sys.stderr)
+        reqs = client.list_requests()
+    except core.PipelineError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return EXIT_FATAL
+
+    if args.list or not args.request:
+        ordered = sorted(reqs, key=lambda r: (r.status != "FILES_READY", -(r.created_ms or 0)))
+        for r in ordered:
+            print(f"{r.request_id:>10}  Ref. {r.google_ref:<12} {r.created:<10}  {r.status_label:<22} {r.case_number}")
+        if args.list:
+            return EXIT_OK
+        try:
+            wanted = _prompt_required("Request a baixar (id ou Ref. Interna)")
+        except EOFError:
+            print("\nErro: informe --request (sem terminal interativo para perguntar).", file=sys.stderr)
+            return EXIT_FATAL
+    else:
+        wanted = args.request
+
+    req = _find_request(reqs, wanted.strip())
+    if req is None:
+        print(f"Erro: request {wanted!r} nao encontrado nesta conta do LERS.", file=sys.stderr)
+        return EXIT_FATAL
+
+    output_dir = args.output_dir or Path(f"LERS {req.google_ref or req.request_id}")
+    kinds = lers.DEFAULT_FILE_KINDS + (("LEGAL_PROCESS",) if args.include_legal_process else ())
+    use_color = _use_color(args)
+
+    def log(message: str) -> None:
+        print(_colorize(message) if use_color else message)
+
+    try:
+        files = [f for f in client.list_files(req.request_id) if f.kind in kinds]
+        if not files:
+            print("Erro: esse request nao tem arquivos para baixar.", file=sys.stderr)
+            return EXIT_FATAL
+        saved = client.download_files(req.request_id, files, output_dir, log=log)
+    except core.PipelineError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return EXIT_FATAL
+
+    print(f"\n{len(saved)}/{len(files)} arquivo(s) do LERS em: {output_dir}")
+    if len(saved) != len(files):
+        return EXIT_PENDING
+    if not args.verify:
+        return EXIT_OK
+    # Confere os hashes ali mesmo (destino = origem: nada e' copiado nem extraido).
+    return main([
+        "run", "--provider", "google", "--source", str(output_dir), "--output-dir", str(output_dir),
+        "--yes", "--quiet", *(["--no-color"] if not use_color else []),
+    ])
+
+
 # ----------------------------------------------------------------- argparse
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="joakapple",
-        description="JoaKApple (modo texto, Linux) — baixa, verifica, descriptografa e gera o "
-        "Termo de Recebimento de retorno de oficios judiciais da Apple.",
+        prog="joacloud",
+        description="JoaCloud (modo texto, Linux) — baixa, verifica, descriptografa e gera o "
+        "Termo de Recebimento de retorno de oficios judiciais (Apple, Google).",
     )
     sub = parser.add_subparsers(dest="command")
 
+    def add_provider_args(p: argparse.ArgumentParser, source_help: Optional[str] = None) -> None:
+        p.add_argument(
+            "--provider", choices=sorted(providers.PROVIDERS), default=providers.DEFAULT_PROVIDER,
+            help="Nuvem de origem (default: apple)",
+        )
+        p.add_argument(
+            "--csv", "--source", dest="csv", type=Path, default=None,
+            help=source_help or "CSV da Apple, ou pasta com o retorno do LERS (--provider google)",
+        )
+
     run_p = sub.add_parser("run", help="Executa o pipeline (baixar/verificar/descriptografar).")
-    run_p.add_argument("--csv", type=Path, default=None, help="CSV da Apple")
+    add_provider_args(run_p)
     run_p.add_argument("--output-dir", type=Path, default=None, help="Pasta de destino")
     run_p.add_argument("--download", action=argparse.BooleanOptionalAction, default=True)
     run_p.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True)
-    run_p.add_argument("--decrypt", action=argparse.BooleanOptionalAction, default=True)
+    run_p.add_argument(
+        "--decrypt", dest="decrypt", action=argparse.BooleanOptionalAction, default=True,
+        help="Etapa 3 (so' Apple): descriptografar. O Google nao tem etapa 3: os ZIPs ficam originais",
+    )
     run_p.add_argument("--workers", type=int, default=4, help="Downloads simultaneos")
     run_p.add_argument("--only", default=None, help="Nomes de arquivo separados por virgula")
     run_p.add_argument("--exclude", default=None, help="Nomes de arquivo separados por virgula")
@@ -689,19 +785,38 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--no-color", action="store_true", help="Desliga cores ANSI no log")
     run_p.set_defaults(handler=_cmd_run)
 
-    list_p = sub.add_parser("list", help="Lista os arquivos do CSV, sem baixar nada.")
-    list_p.add_argument("--csv", type=Path, default=None)
+    list_p = sub.add_parser("list", help="Lista os arquivos da fonte (CSV/pasta), sem baixar nada.")
+    add_provider_args(list_p)
     list_p.add_argument("--output-dir", type=Path, default=None)
     list_p.add_argument("--menu", "-i", action="store_true")
     list_p.set_defaults(handler=_cmd_list)
 
     delete_p = sub.add_parser("delete", help="Remove do disco os arquivos ja obtidos de uma selecao.")
-    delete_p.add_argument("--csv", type=Path, default=None)
+    add_provider_args(delete_p)
     delete_p.add_argument("--output-dir", type=Path, default=None)
     delete_p.add_argument("--only", default=None, help="Nomes de arquivo separados por virgula (obrigatorio)")
     delete_p.add_argument("--yes", "-y", action="store_true", help="Pula a confirmacao")
     delete_p.add_argument("--menu", "-i", action="store_true")
     delete_p.set_defaults(handler=_cmd_delete)
+
+    lers_p = sub.add_parser(
+        "lers",
+        help="Google: login no LERS pelo navegador e download de um request (ZIPs originais, sem extrair).",
+    )
+    lers_p.add_argument("--list", action="store_true", help="So lista os requests da conta")
+    lers_p.add_argument("--request", default=None, help="Id do request no LERS ou Ref. Interna do Google")
+    lers_p.add_argument(
+        "--output-dir", type=Path, default=None, help='Onde salvar (default: "LERS <Ref. Interna>")',
+    )
+    lers_p.add_argument(
+        "--include-legal-process", action="store_true", help="Baixa tambem o oficio enviado pelo orgao",
+    )
+    lers_p.add_argument(
+        "--verify", action=argparse.BooleanOptionalAction, default=True,
+        help="Confere o SHA-512 dos ZIPs logo depois de baixar (default: sim)",
+    )
+    lers_p.add_argument("--no-color", action="store_true", help="Desliga cores ANSI no log")
+    lers_p.set_defaults(handler=_cmd_lers)
 
     report_p = sub.add_parser("report", help="Gera o Termo de Recebimento.")
     report_p.add_argument("--processo", default=None)
@@ -717,7 +832,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("--id-documento", default=None)
     report_p.add_argument("--original", action=argparse.BooleanOptionalAction, default=False)
     report_p.add_argument("--processada", action=argparse.BooleanOptionalAction, default=False)
-    report_p.add_argument("--csv", type=Path, default=None, help="Para calcular hashes")
+    add_provider_args(report_p, source_help="Para calcular hashes (CSV da Apple ou pasta do LERS)")
     report_p.add_argument("--output-dir", type=Path, default=None, help="Para calcular hashes")
     report_p.add_argument("--only", default=None, help="Nomes de arquivo separados por virgula")
     report_p.add_argument("--exclude", default=None, help="Nomes de arquivo separados por virgula")

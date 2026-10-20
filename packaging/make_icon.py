@@ -1,4 +1,4 @@
-"""Gera o icone do JoaKApple (mesma paleta da GUI) em varios tamanhos + .ico/.png.
+"""Gera o icone do JoaCloud (mesma paleta da GUI) em varios tamanhos + .ico/.png.
 
 Fonte unica de verdade pro visual do icone. Requer Pillow (``pip install
 Pillow``) e a fonte DejaVu Sans Bold (mesma familia usada na GUI).
@@ -44,9 +44,9 @@ def make_master() -> Image.Image:
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, SIZE - 1, SIZE - 1], radius=radius, fill=255)
     img.putalpha(mask)
 
-    # Monograma "A" em creme, bold, centralizado.
+    # Monograma "C" (de JoaCloud) em creme, bold, centralizado.
     font = _load_font(int(SIZE * 0.56))
-    text = "A"
+    text = "C"
     bbox = draw.textbbox((0, 0), text, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     pos = ((SIZE - tw) / 2 - bbox[0], (SIZE - th) / 2 - bbox[1] - SIZE * 0.035)

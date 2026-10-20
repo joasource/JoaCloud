@@ -1,5 +1,5 @@
 """
-JoaKApple - ponto de entrada unico: GUI por padrao, CLI de texto com
+JoaCloud - ponto de entrada unico: GUI por padrao, CLI de texto com
 --no-gui (so no build Linux — o .exe do Windows continua apontando pra
 gui.py direto, ver .github/workflows/release.yml).
 
