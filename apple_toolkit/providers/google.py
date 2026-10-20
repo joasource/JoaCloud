@@ -6,10 +6,11 @@ O Google nao fornece CSV. Pelo LERS chegam, por request:
 - um ou mais ZIPs de producao (``<id>-<AAAAMMDD>-<n>.zip``, sem senha), cada
   um contendo ZIPs internos ``<identificador>.<num>.<Servico>.<Recurso>_001.zip``
   com os dados de fato;
-- PDFs de correspondencia, entre eles o "Valores de Hash", que lista o
-  SHA-512 de cada ZIP INTERNO (nao do ZIP de producao), no formato
-  ``<nome_do_zip_interno>:`` + ``SHA512-<128 hex>`` — com nome e hash
-  quebrados em varias linhas pelo layout do PDF.
+- PDFs de correspondencia: o "Valores de Hash" (ou a propria carta, com a
+  secao "Valores de Hash dos Arquivos Produzidos") lista o SHA-512 de cada
+  ZIP INTERNO (nao do ZIP de producao), no formato ``<nome_do_zip_interno>:``
+  + ``SHA512-<128 hex>`` ou so' ``<128 hex>`` — com nome e hash quebrados em
+  varias linhas pelo layout do PDF.
 
 Aqui a "fonte" e' a pasta com esses arquivos. Cada ZIP interno vira um
 FileEntry. Nada e' extraido nem descompactado em disco: os dados ficam nos ZIPs
@@ -44,9 +45,11 @@ from providers.base import Provider
 
 HASH_ALGORITHM = "sha512"
 
-# Rotulo + hash, depois de remover todo espaco/quebra de linha do texto do PDF.
-# Dependendo do extrator, o hifen de "SHA512-" pode sumir.
-_HASH_RE = re.compile(r":SHA-?512[-:]?([0-9a-fA-F]{128})")
+# "<nome>:" + hash, depois de remover todo espaco/quebra de linha do texto do
+# PDF. Algumas cartas trazem o rotulo "SHA512-" antes do hash (dependendo do
+# extrator, sem o hifen); outras, so' o hash. O hash pode vir colado no nome
+# seguinte, por isso nao ha' limite de palavra depois dos 128 hex.
+_HASH_RE = re.compile(r":(?:SHA-?512[-:]?)?([0-9a-fA-F]{128})")
 # Fallback pra nome de ZIP listado no PDF que nao esta em nenhum ZIP de
 # producao: o maior sufixo do trecho antes do hash com cara de nome de arquivo.
 _NAME_TAIL_RE = re.compile(r"([\w.@+\-]+\.zip)$", re.IGNORECASE)

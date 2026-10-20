@@ -33,6 +33,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 import core
+import lers
 import providers
 import report
 
@@ -340,6 +341,225 @@ class FileRow(ctk.CTkFrame):
         self.status_label.configure(text_color=STATUS_ROW_COLOR.get(status, TEXT_SECONDARY))
 
 
+class LersDialog(ctk.CTkToplevel):
+    """Login no Google LERS pelo navegador e download de um request.
+
+    O trabalho com o navegador (CDP) roda numa thread; a janela so' le a fila
+    de eventos. O navegador fica aberto ao fechar a janela, para manter o
+    login na proxima vez."""
+
+    def __init__(self, master, default_parent: Path, on_downloaded, log_queue: "queue.Queue"):
+        super().__init__(master)
+        self.title("Baixar do LERS (Google)")
+        self.geometry("720x560")
+        self.configure(fg_color=BG_APP)
+        self.transient(master)
+        self.default_parent = default_parent
+        self.on_downloaded = on_downloaded
+        self.app_log_queue = log_queue
+        self.events: queue.Queue = queue.Queue()
+        self.cancel_event = threading.Event()
+        self.client: lers.LersClient | None = None
+        self.requests: list[lers.LersRequest] = []
+        self.request_var = tk.IntVar(value=-1)
+        self.include_legal_var = tk.BooleanVar(value=False)
+        self.dest_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Abrindo o navegador…")
+        self.busy = False
+        self.downloading = False
+
+        ctk.CTkLabel(
+            self, textvariable=self.status_var, text_color=TEXT_PRIMARY, justify="left", anchor="w",
+            wraplength=680, font=ctk.CTkFont(family="DejaVu Sans", size=13),
+        ).pack(fill="x", padx=16, pady=(16, 8))
+
+        self.list_frame = ctk.CTkScrollableFrame(
+            self, fg_color="#FFFFFF", border_width=1, border_color=BORDER_SOFT, corner_radius=10,
+        )
+        self.list_frame.pack(fill="both", expand=True, padx=16, pady=4)
+
+        opts = ctk.CTkFrame(self, fg_color="transparent")
+        opts.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkCheckBox(
+            opts, text="Incluir também o ofício enviado pelo órgão (LEGAL_PROCESS)",
+            variable=self.include_legal_var, checkbox_width=16, checkbox_height=16,
+            fg_color=ACCENT, text_color=TEXT_SECONDARY, font=ctk.CTkFont(family="DejaVu Sans", size=11),
+        ).pack(anchor="w")
+
+        dest = ctk.CTkFrame(self, fg_color="transparent")
+        dest.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkLabel(
+            dest, text="SALVAR EM", text_color=TEXT_SECONDARY,
+            font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
+        ).pack(anchor="w")
+        dest_row = ctk.CTkFrame(dest, fg_color="transparent")
+        dest_row.pack(fill="x", pady=(4, 0))
+        ctk.CTkEntry(
+            dest_row, textvariable=self.dest_var, fg_color="#FFFFFF", border_color=BORDER, text_color=TEXT_PRIMARY,
+        ).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(
+            dest_row, text="Selecionar…", command=self._pick_dest, width=100,
+            fg_color="#FFFFFF", hover_color=BORDER_SOFT, text_color=TEXT_PRIMARY,
+            border_width=1, border_color=BORDER, corner_radius=8,
+        ).pack(side="left", padx=(8, 0))
+
+        self.progress = ctk.CTkProgressBar(self, progress_color=ACCENT, fg_color=BORDER_SOFT, height=8)
+        self.progress.set(0)
+        self.progress.pack(fill="x", padx=16, pady=(12, 0))
+
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", padx=16, pady=12)
+        self.download_button = ctk.CTkButton(
+            bar, text="Baixar", command=self._start_download, state="disabled",
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#FFFFFF", corner_radius=8,
+        )
+        self.download_button.pack(side="left")
+        self.close_button = ctk.CTkButton(
+            bar, text="Cancelar", command=self._close,
+            fg_color="#FFFFFF", hover_color=BORDER_SOFT, text_color=TEXT_PRIMARY,
+            border_width=1, border_color=BORDER, corner_radius=8,
+        )
+        self.close_button.pack(side="left", padx=8)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+        self._run(self._login_worker)
+        self.after(150, self._poll)
+
+    # ------------------------------------------------------------- threads
+
+    def _run(self, target, *args):
+        self.busy = True
+        threading.Thread(target=target, args=args, daemon=True).start()
+
+    def _log(self, message: str) -> None:
+        self.app_log_queue.put(message)
+        if "reautenticacao necessaria" in message:
+            self.events.put(("status", "O Google pediu para confirmar sua senha: faça isso na janela do navegador."))
+
+    def _login_worker(self):
+        try:
+            browser = lers.LersBrowser()
+            browser.start()
+            self.events.put(("status", "Faça o login no LERS na janela do navegador que abriu (com a verificação em duas etapas)."))
+            client = lers.LersClient(browser)
+            client.wait_for_login(cancel_event=self.cancel_event)
+            self.events.put(("status", "Login reconhecido. Carregando a lista de requests (o LERS pode levar alguns segundos)…"))
+            self.events.put(("requests", (client, client.list_requests())))
+        except Exception as exc:  # noqa: BLE001 - mostra qualquer falha na janela
+            self.events.put(("error", str(exc)))
+
+    def _download_worker(self, req: lers.LersRequest, dest: Path, kinds: tuple[str, ...]):
+        try:
+            files = [f for f in self.client.list_files(req.request_id) if f.kind in kinds]
+            if not files:
+                raise lers.LersError("Esse request não tem arquivos para baixar.")
+            total = sum(f.size for f in files) or 1
+            done: dict[int, int] = {}
+
+            def on_progress(f, received, _size):
+                done[f.file_id] = received
+                self.events.put(("progress", (sum(done.values()) / total, f.name, len(done), len(files))))
+
+            saved = self.client.download_files(
+                req.request_id, files, dest, log=self._log, on_progress=on_progress, cancel_event=self.cancel_event,
+            )
+            self.events.put(("done", (dest, len(saved), len(files))))
+        except Exception as exc:  # noqa: BLE001
+            self.events.put(("error", str(exc)))
+
+    # ------------------------------------------------------------- UI
+
+    def _poll(self):
+        if not self.winfo_exists():
+            return
+        while True:
+            try:
+                kind, payload = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "status":
+                self.status_var.set(payload)
+            elif kind == "requests":
+                self.busy = False
+                self.client, self.requests = payload
+                self._show_requests()
+            elif kind == "progress":
+                fraction, name, index, count = payload
+                self.progress.set(min(fraction, 1.0))
+                self.status_var.set(f"Baixando {index}/{count}: {name}")
+            elif kind == "done":
+                self.busy = self.downloading = False
+                dest, saved, count = payload
+                self.progress.set(1.0 if saved == count else self.progress.get())
+                if saved == count:
+                    self.status_var.set(f"Concluído: {saved} arquivo(s) em {dest}. A pasta já foi selecionada como origem.")
+                    self.on_downloaded(dest)
+                else:
+                    self.status_var.set(f"Interrompido: {saved} de {count} arquivo(s) baixados em {dest}.")
+                self.download_button.configure(state="normal")
+                self.close_button.configure(text="Fechar")
+            elif kind == "error":
+                self.busy = self.downloading = False
+                self.status_var.set(f"Erro: {payload}")
+                self.download_button.configure(state="normal" if self.requests else "disabled")
+        self.after(150, self._poll)
+
+    def _show_requests(self):
+        if not self.requests:
+            self.status_var.set("Nenhum request encontrado nesta conta do LERS.")
+            return
+        self.status_var.set("Escolha o request a baixar (os com arquivos disponíveis vêm primeiro):")
+        ordered = sorted(self.requests, key=lambda r: (r.status != "FILES_READY", -(r.created_ms or 0)))
+        for i, req in enumerate(ordered):
+            text = f"Ref. {req.google_ref}  ·  {req.case_number or 'sem número'}  ·  {req.created}  ·  {req.status_label}"
+            ctk.CTkRadioButton(
+                self.list_frame, text=text, variable=self.request_var, value=req.request_id,
+                command=self._on_select, fg_color=ACCENT, text_color=TEXT_PRIMARY,
+                font=ctk.CTkFont(family="DejaVu Sans", size=12),
+            ).grid(row=i, column=0, sticky="w", padx=10, pady=3)
+        ready = [r for r in ordered if r.status == "FILES_READY"]
+        if ready:
+            self.request_var.set(ready[0].request_id)
+            self._on_select()
+
+    def _selected(self) -> lers.LersRequest | None:
+        return next((r for r in self.requests if r.request_id == self.request_var.get()), None)
+
+    def _on_select(self):
+        req = self._selected()
+        if req is None:
+            return
+        self.dest_var.set(str(self.default_parent / f"LERS {req.google_ref or req.request_id}"))
+        self.download_button.configure(state="normal")
+
+    def _pick_dest(self):
+        path = filedialog.askdirectory(parent=self, title="Pasta onde salvar os arquivos do LERS")
+        if path:
+            self.dest_var.set(path)
+
+    def _start_download(self):
+        req = self._selected()
+        dest = self.dest_var.get().strip()
+        if req is None or not dest or self.busy:
+            return
+        kinds = lers.DEFAULT_FILE_KINDS + (("LEGAL_PROCESS",) if self.include_legal_var.get() else ())
+        self.download_button.configure(state="disabled")
+        self.close_button.configure(text="Cancelar")
+        self.cancel_event.clear()
+        self.progress.set(0)
+        self.status_var.set("Listando os arquivos do request…")
+        self.downloading = True
+        self._run(self._download_worker, req, Path(dest), kinds)
+
+    def _close(self):
+        self.cancel_event.set()
+        if self.downloading:
+            # Espera o worker parar o download no navegador; ele avisa por "done"/"error".
+            self.status_var.set("Cancelando…")
+            return
+        self.destroy()
+
+
 class JoaKAppleGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -424,6 +644,11 @@ class JoaKAppleGUI(ctk.CTk):
         self.source_label = self._field(
             config_card, self.provider.source_label, self.source_path_var, self._pick_source, row=0, col=0
         )
+        self.lers_button = ctk.CTkButton(
+            self.source_label.row_frame, text="Baixar do LERS…", command=self._open_lers_dialog,
+            width=130, fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="#FFFFFF", corner_radius=8,
+        )
+        self._update_lers_button()
         self._field(config_card, "Pasta de destino", self.output_dir_var, self._pick_output_dir, row=0, col=1)
 
         row2 = ctk.CTkFrame(config_card, fg_color="transparent")
@@ -592,7 +817,8 @@ class JoaKAppleGUI(ctk.CTk):
 
     def _field(self, parent, label, variable, command, row, col):
         """Campo com rotulo + entrada + botao Selecionar; retorna o rotulo
-        (pra poder trocar o texto quando o provedor muda)."""
+        (pra poder trocar o texto quando o provedor muda), com a linha da
+        entrada em ``row_frame``."""
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
         wrap.grid(row=row, column=col, sticky="we", padx=16, pady=(14, 4))
         label_widget = ctk.CTkLabel(
@@ -612,6 +838,7 @@ class JoaKAppleGUI(ctk.CTk):
             fg_color="#FFFFFF", hover_color=BORDER_SOFT, text_color=TEXT_PRIMARY,
             border_width=1, border_color=BORDER, corner_radius=8,
         ).pack(side="left", padx=(8, 0))
+        label_widget.row_frame = inner  # pra botoes extras ao lado do campo
         return label_widget
 
     def _empty_list_text(self) -> str:
@@ -654,9 +881,32 @@ class JoaKAppleGUI(ctk.CTk):
         for card in self.step_cards.values():
             card.set_provider(provider)
         self._layout_step_cards()
+        self._update_lers_button()
         self.entries = []
         self._rebuild_file_list()
         self._update_step_state()
+
+    def _update_lers_button(self):
+        if self.provider.key == "google":
+            self.lers_button.pack(side="left", padx=(8, 0))
+        else:
+            self.lers_button.pack_forget()
+
+    def _open_lers_dialog(self):
+        if self.worker_thread and self.worker_thread.is_alive():
+            messagebox.showwarning(APP_TITLE, "Aguarde o pipeline atual terminar.")
+            return
+        if getattr(self, "_lers_dialog", None) is not None and self._lers_dialog.winfo_exists():
+            self._lers_dialog.focus()
+            return
+        parent = self.output_dir_var.get().strip() or str(Path.home())
+        self._lers_dialog = LersDialog(self, Path(parent), self._on_lers_downloaded, self.log_queue)
+
+    def _on_lers_downloaded(self, folder: Path):
+        self.source_path_var.set(str(folder))
+        if not self.output_dir_var.get().strip():
+            self.output_dir_var.set(str(folder))
+        self._reload_file_list()
 
     def _toggle_password(self):
         self.pass_entry.configure(show="" if self.show_pass_var.get() else "*")

@@ -130,6 +130,14 @@ def test_parse_hash_text_accepts_label_without_hyphen():
     assert google.parse_hash_text(text, known_names={INNER_A}) == {INNER_A: digest}
 
 
+def test_parse_hash_text_without_sha512_label():
+    # Formato da carta com "Valores de Hash dos Arquivos Produzidos": so' o hex,
+    # e o hash seguinte colado no proximo nome (que pode comecar com digito hex).
+    digest_a, digest_b = "a" * 128, "b" * 128
+    text = f"Valores de Hash dos Arquivos Produzidos\n{INNER_A}:\n{digest_a[:90]}\n{digest_a[90:]}{INNER_B}:\n{digest_b}"
+    assert google.parse_hash_text(text, known_names={INNER_A, INNER_B}) == {INNER_A: digest_a, INNER_B: digest_b}
+
+
 def test_parse_hash_text_known_name_not_glued_to_header_digits():
     # Na 2a pagina o cabecalho termina no CEP (94043) colado no nome que
     # comeca com digitos — sem os nomes conhecidos a heuristica erraria.

@@ -673,6 +673,76 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ------------------------------------------------------------------ lers
+
+def _find_request(reqs: list, wanted: str):
+    """Request pelo id interno do LERS ou pela Ref. Interna do Google."""
+    return next((r for r in reqs if wanted in (str(r.request_id), r.google_ref)), None)
+
+
+def _cmd_lers(args: argparse.Namespace) -> int:
+    import lers
+
+    browser = lers.LersBrowser()
+    client = lers.LersClient(browser)
+    try:
+        browser.start()
+        print("Faca o login no LERS na janela do navegador que abriu (o JoaKApple espera)...", file=sys.stderr)
+        client.wait_for_login()
+        print("Login reconhecido. Carregando a lista de requests...", file=sys.stderr)
+        reqs = client.list_requests()
+    except core.PipelineError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return EXIT_FATAL
+
+    if args.list or not args.request:
+        ordered = sorted(reqs, key=lambda r: (r.status != "FILES_READY", -(r.created_ms or 0)))
+        for r in ordered:
+            print(f"{r.request_id:>10}  Ref. {r.google_ref:<12} {r.created:<10}  {r.status_label:<22} {r.case_number}")
+        if args.list:
+            return EXIT_OK
+        try:
+            wanted = _prompt_required("Request a baixar (id ou Ref. Interna)")
+        except EOFError:
+            print("\nErro: informe --request (sem terminal interativo para perguntar).", file=sys.stderr)
+            return EXIT_FATAL
+    else:
+        wanted = args.request
+
+    req = _find_request(reqs, wanted.strip())
+    if req is None:
+        print(f"Erro: request {wanted!r} nao encontrado nesta conta do LERS.", file=sys.stderr)
+        return EXIT_FATAL
+
+    output_dir = args.output_dir or Path(f"LERS {req.google_ref or req.request_id}")
+    kinds = lers.DEFAULT_FILE_KINDS + (("LEGAL_PROCESS",) if args.include_legal_process else ())
+    use_color = _use_color(args)
+
+    def log(message: str) -> None:
+        print(_colorize(message) if use_color else message)
+
+    try:
+        files = [f for f in client.list_files(req.request_id) if f.kind in kinds]
+        if not files:
+            print("Erro: esse request nao tem arquivos para baixar.", file=sys.stderr)
+            return EXIT_FATAL
+        saved = client.download_files(req.request_id, files, output_dir, log=log)
+    except core.PipelineError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return EXIT_FATAL
+
+    print(f"\n{len(saved)}/{len(files)} arquivo(s) do LERS em: {output_dir}")
+    if len(saved) != len(files):
+        return EXIT_PENDING
+    if not args.verify:
+        return EXIT_OK
+    # Confere os hashes ali mesmo (destino = origem: nada e' copiado nem extraido).
+    return main([
+        "run", "--provider", "google", "--source", str(output_dir), "--output-dir", str(output_dir),
+        "--yes", "--quiet", *(["--no-color"] if not use_color else []),
+    ])
+
+
 # ----------------------------------------------------------------- argparse
 
 def build_parser() -> argparse.ArgumentParser:
@@ -728,6 +798,25 @@ def build_parser() -> argparse.ArgumentParser:
     delete_p.add_argument("--yes", "-y", action="store_true", help="Pula a confirmacao")
     delete_p.add_argument("--menu", "-i", action="store_true")
     delete_p.set_defaults(handler=_cmd_delete)
+
+    lers_p = sub.add_parser(
+        "lers",
+        help="Google: login no LERS pelo navegador e download de um request (ZIPs originais, sem extrair).",
+    )
+    lers_p.add_argument("--list", action="store_true", help="So lista os requests da conta")
+    lers_p.add_argument("--request", default=None, help="Id do request no LERS ou Ref. Interna do Google")
+    lers_p.add_argument(
+        "--output-dir", type=Path, default=None, help='Onde salvar (default: "LERS <Ref. Interna>")',
+    )
+    lers_p.add_argument(
+        "--include-legal-process", action="store_true", help="Baixa tambem o oficio enviado pelo orgao",
+    )
+    lers_p.add_argument(
+        "--verify", action=argparse.BooleanOptionalAction, default=True,
+        help="Confere o SHA-512 dos ZIPs logo depois de baixar (default: sim)",
+    )
+    lers_p.add_argument("--no-color", action="store_true", help="Desliga cores ANSI no log")
+    lers_p.set_defaults(handler=_cmd_lers)
 
     report_p = sub.add_parser("report", help="Gera o Termo de Recebimento.")
     report_p.add_argument("--processo", default=None)

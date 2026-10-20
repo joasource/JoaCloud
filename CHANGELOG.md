@@ -21,6 +21,23 @@ seguem [SemVer](https://semver.org/lang/pt-BR/).
     (lido com `pypdf`, nova dependência).
   - Não há etapa 3 para o Google; o card some da GUI. "Excluir" remove só a
     cópia no destino, nunca o original do LERS.
+- **Baixar do LERS** (Google): login e download automático do request.
+  Na GUI, o botão "Baixar do LERS…" ao lado da pasta de origem; na CLI,
+  `joakapple lers` (`--list`, `--request <id ou Ref. Interna>`).
+  - Abre o navegador instalado (Edge/Chrome/Chromium/Brave) com um perfil
+    próprio do JoaKApple; o login (com 2FA) é feito ali mesmo e fica salvo
+    para as próximas vezes. Senha e cookies nunca passam pelo app.
+  - Lista os requests da conta, com os de arquivos disponíveis primeiro, e
+    baixa os ZIPs de produção e os PDFs pelo gerenciador de downloads do
+    navegador, exatamente como o LERS entrega, conferindo o tamanho de cada
+    um. Se o Google pedir para confirmar a senha antes do download, isso
+    acontece no navegador, uma vez por sessão.
+  - A pasta baixada vira a origem do pipeline. Pela CLI, os hashes já são
+    conferidos em seguida (`--no-verify` desliga).
+  - Nova dependência: `websocket-client`.
+- O PDF de hashes do Google também é reconhecido quando os valores vêm sem
+  o rótulo `SHA512-` (formato da carta "Valores de Hash dos Arquivos
+  Produzidos").
 - Termo de Recebimento com provedor, algoritmo de hash e formato dos
   pacotes de acordo com o provedor (Google LLC, SHA-512, ZIP).
 
