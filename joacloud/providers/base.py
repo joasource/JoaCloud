@@ -70,7 +70,11 @@ class Provider:
 
     # ------------------------------------------------------------- entrada
 
-    def load_entries(self, source: Path) -> list["FileEntry"]:
+    def source_needs_passphrase(self, source: Path) -> bool:
+        """True se ler a fonte exige a senha (ex.: pacote .zip.gpg da Apple)."""
+        return False
+
+    def load_entries(self, source: Path, passphrase: str = "") -> list["FileEntry"]:
         raise NotImplementedError
 
     # ------------------------------------------------------- arquivos locais

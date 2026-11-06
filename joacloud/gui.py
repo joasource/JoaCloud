@@ -28,7 +28,7 @@ import time
 from datetime import datetime
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 
 import customtkinter as ctk
 
@@ -39,7 +39,7 @@ import report
 
 APP_TITLE = "JoaCloud"
 APP_DESCRIPTION = "Toolkit para baixar, verificar e abrir retorno de ofícios judiciais — Apple e Google"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 AUTHOR_LINE = "Joaquim Ferreira Silva Neto  ·  joaquimfsneto@gmail.com"
 
 
@@ -668,6 +668,7 @@ class JoaCloudGUI(ctk.CTk):
             fg_color="#FFFFFF", border_color=BORDER, text_color=TEXT_PRIMARY,
         )
         self.pass_entry.pack(side="left")
+        self.pass_entry.bind("<Return>", self._on_passphrase_enter)
         self.show_pass_check = ctk.CTkCheckBox(
             pass_row, text="mostrar", variable=self.show_pass_var,
             command=self._toggle_password, checkbox_width=16, checkbox_height=16,
@@ -943,10 +944,16 @@ class JoaCloudGUI(ctk.CTk):
             path = filedialog.askdirectory(title=f"Selecione a {self.provider.source_label.lower()}")
         else:
             path = filedialog.askopenfilename(
-                title=f"Selecione o {self.provider.source_label}", filetypes=[("CSV", "*.csv"), ("Todos", "*.*")]
+                title=f"Selecione o {self.provider.source_label}", filetypes=[("CSV ou pacote da Apple", "*.csv *.gpg *.zip"), ("Todos", "*.*")]
             )
         if path:
             self.source_path_var.set(path)
+            self._reload_file_list()
+
+    def _on_passphrase_enter(self, _event=None):
+        """Enter na senha: recarrega a lista se a fonte for o pacote .zip.gpg."""
+        src = self.source_path_var.get().strip()
+        if src and self.provider.source_needs_passphrase(Path(src)):
             self._reload_file_list()
 
     def _pick_output_dir(self):
@@ -962,9 +969,24 @@ class JoaCloudGUI(ctk.CTk):
             self.entries = []
             self._rebuild_file_list()
             return
+        asked = False
+        if self.provider.source_needs_passphrase(Path(source_path)) and not self.passphrase_var.get():
+            typed = simpledialog.askstring(
+                APP_TITLE,
+                "Este é o pacote .gpg da Apple.\nInforme a senha GPG para ler o CSV de dentro dele:",
+                show="*", parent=self,
+            )
+            if not typed:
+                self.entries = []
+                self._rebuild_file_list()
+                return
+            self.passphrase_var.set(typed)
+            asked = True
         try:
-            self.entries = self.provider.load_entries(Path(source_path))
+            self.entries = self.provider.load_entries(Path(source_path), self.passphrase_var.get())
         except core.PipelineError as exc:
+            if asked:
+                self.passphrase_var.set("")  # senha digitada errada: pergunta de novo na proxima
             self.entries = []
             self._rebuild_file_list()
             messagebox.showerror(APP_TITLE, str(exc))
@@ -1455,7 +1477,7 @@ class JoaCloudGUI(ctk.CTk):
             entries = []
             if self.source_path_var.get().strip():
                 try:
-                    entries = self.provider.load_entries(Path(self.source_path_var.get().strip()))
+                    entries = self.provider.load_entries(Path(self.source_path_var.get().strip()), self.passphrase_var.get())
                 except core.PipelineError:
                     entries = []
 

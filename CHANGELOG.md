@@ -4,6 +4,18 @@ Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.2.0] - 2026-11-06
+
+### Adicionado
+- Apple: a fonte de entrada agora também pode ser o pacote `.zip.gpg` que a
+  Apple envia antes (ou o `.zip` já descriptografado). O programa o abre com a
+  mesma senha GPG, localiza o CSV de links de download dentro dele e segue o
+  pipeline normal.
+  - CLI: `run`, `list`, `delete` e `report` aceitam o pacote em `--csv`; a
+    senha vem de `--passphrase-env`, `--passphrase-stdin` ou do prompt (agora
+    disponíveis em todos esses comandos) e é reaproveitada na descriptografia.
+  - GUI: ao escolher o pacote com a senha em branco, uma janela pede a senha.
+
 ## [2.1.0] - 2026-10-20
 
 ### Adicionado

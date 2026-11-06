@@ -15,11 +15,14 @@ para mais detalhes: <https://www.gnu.org/licenses/>.
 from __future__ import annotations
 
 import csv
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -69,42 +72,113 @@ def _resolve_column(fieldnames: list[str], aliases: list[str]) -> Optional[str]:
     return None
 
 
-def load_entries(csv_path: Path) -> list[core.FileEntry]:
+def is_package(path: Path) -> bool:
+    """True se ``path`` e' o pacote que a Apple envia antes (.zip.gpg / .gpg / .zip)
+    em vez do CSV de links."""
+    return Path(path).suffix.lower() in (".gpg", ".zip")
+
+
+def _read_package_csv(package_path: Path, passphrase: str) -> str:
+    """Abre o pacote da Apple (.zip.gpg ou .zip ja' descriptografado) e devolve
+    o texto do CSV de links de download que esta' dentro dele."""
+    package_path = Path(package_path)
+    tmp_dir: Optional[tempfile.TemporaryDirectory] = None
+    zip_path = package_path
+    try:
+        if package_path.suffix.lower() == ".gpg":
+            if not check_gpg_available():
+                raise core.PipelineError("O executavel 'gpg' nao foi encontrado no PATH.")
+            if not passphrase:
+                raise core.PipelineError(
+                    "Este arquivo e' o pacote .gpg da Apple: informe a senha GPG para ler o CSV de dentro dele."
+                )
+            tmp_dir = tempfile.TemporaryDirectory(prefix="joacloud-")
+            zip_path = Path(tmp_dir.name) / "pacote.zip"
+            try:
+                result = subprocess.run(
+                    [_gpg_executable(), "--batch", "--yes", "--pinentry-mode", "loopback",
+                     "--passphrase-fd", "0", "--output", str(zip_path), "--decrypt", str(package_path)],
+                    input=passphrase.strip("\r\n").encode("utf-8"),
+                    capture_output=True,
+                    timeout=GPG_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                raise core.PipelineError("gpg excedeu o tempo limite ao abrir o pacote.") from None
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                raise core.PipelineError(f"Falha ao descriptografar o pacote (senha incorreta?): {stderr}")
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                names = [n for n in zf.namelist() if n.lower().endswith(".csv") and not n.endswith("/")]
+                # o CSV de links costuma se chamar "...-account-download-details.csv"
+                names.sort(key=lambda n: (not n.lower().endswith("download-details.csv"), n))
+                for name in names:
+                    text = zf.read(name).decode("utf-8-sig")
+                    header = next(csv.reader(io.StringIO(text)), [])
+                    if _resolve_column(header, COLUMN_ALIASES["file_name"]) and _resolve_column(
+                        header, COLUMN_ALIASES["file_link"]
+                    ):
+                        return text
+        except zipfile.BadZipFile:
+            raise core.PipelineError(f"O conteudo de {package_path.name} nao e' um ZIP valido.") from None
+        raise core.PipelineError(f"Nenhum CSV de links de download encontrado dentro de {package_path.name}.")
+    finally:
+        if tmp_dir:
+            tmp_dir.cleanup()
+
+
+_PACKAGE_CACHE: dict[tuple, str] = {}
+
+
+def load_entries(csv_path: Path, passphrase: str = "") -> list[core.FileEntry]:
     csv_path = Path(csv_path)
     if not csv_path.is_file():
         raise core.PipelineError(f"Arquivo CSV nao encontrado: {csv_path}")
 
+    if is_package(csv_path):
+        st = csv_path.stat()
+        key = (str(csv_path.resolve()), st.st_mtime_ns, st.st_size)
+        text = _PACKAGE_CACHE.get(key)
+        if text is None:
+            text = _read_package_csv(csv_path, passphrase)
+            _PACKAGE_CACHE[key] = text
+        return _parse_csv(io.StringIO(text, newline=""))
+
     with csv_path.open(newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        if not reader.fieldnames:
-            raise core.PipelineError("CSV vazio ou sem cabecalho.")
+        return _parse_csv(fh)
 
-        col_name = _resolve_column(reader.fieldnames, COLUMN_ALIASES["file_name"])
-        col_link = _resolve_column(reader.fieldnames, COLUMN_ALIASES["file_link"])
-        col_hash = _resolve_column(reader.fieldnames, COLUMN_ALIASES["sha256"])
 
-        if not col_name or not col_link:
-            raise core.PipelineError(
-                "Nao foi possivel identificar as colunas de nome/link do arquivo no CSV. "
-                f"Cabecalho encontrado: {reader.fieldnames}"
+def _parse_csv(fh) -> list[core.FileEntry]:
+    reader = csv.DictReader(fh)
+    if not reader.fieldnames:
+        raise core.PipelineError("CSV vazio ou sem cabecalho.")
+
+    col_name = _resolve_column(reader.fieldnames, COLUMN_ALIASES["file_name"])
+    col_link = _resolve_column(reader.fieldnames, COLUMN_ALIASES["file_link"])
+    col_hash = _resolve_column(reader.fieldnames, COLUMN_ALIASES["sha256"])
+
+    if not col_name or not col_link:
+        raise core.PipelineError(
+            "Nao foi possivel identificar as colunas de nome/link do arquivo no CSV. "
+            f"Cabecalho encontrado: {reader.fieldnames}"
+        )
+
+    entries: list[core.FileEntry] = []
+    for row in reader:
+        file_name = (row.get(col_name) or "").strip()
+        file_link = (row.get(col_link) or "").strip()
+        expected_hash = (row.get(col_hash) or "").strip().lower() if col_hash else ""
+
+        if not file_name or not file_link:
+            continue
+
+        entries.append(
+            core.FileEntry(
+                file_name=file_name,
+                file_link=file_link,
+                expected_hash=expected_hash or None,
             )
-
-        entries: list[core.FileEntry] = []
-        for row in reader:
-            file_name = (row.get(col_name) or "").strip()
-            file_link = (row.get(col_link) or "").strip()
-            expected_hash = (row.get(col_hash) or "").strip().lower() if col_hash else ""
-
-            if not file_name or not file_link:
-                continue
-
-            entries.append(
-                core.FileEntry(
-                    file_name=file_name,
-                    file_link=file_link,
-                    expected_hash=expected_hash or None,
-                )
-            )
+        )
 
     if not entries:
         raise core.PipelineError("Nenhuma linha valida encontrada no CSV.")
@@ -186,7 +260,7 @@ class AppleProvider(Provider):
     hash_algorithm = "sha256"
     package_description = "pacotes criptografados (formato GPG)"
 
-    source_label = "Arquivo CSV da Apple"
+    source_label = "CSV da Apple (ou pacote .zip.gpg)"
     source_is_dir = False
     download_description = "Baixa os arquivos do CSV, retomando downloads incompletos automaticamente."
     verify_description = "Confere o hash SHA256 de cada arquivo contra o valor informado pela Apple."
@@ -197,8 +271,11 @@ class AppleProvider(Provider):
     unpack_done_message = "ja existia descriptografado"
     needs_passphrase = True
 
-    def load_entries(self, source: Path) -> list[core.FileEntry]:
-        return load_entries(source)
+    def source_needs_passphrase(self, source: Path) -> bool:
+        return is_package(source)
+
+    def load_entries(self, source: Path, passphrase: str = "") -> list[core.FileEntry]:
+        return load_entries(source, passphrase)
 
     def fetch(self, session, entry, dest, cancel_event, log, on_progress=None) -> bool:
         return core.download_http(session, entry, dest, cancel_event, log, on_progress=on_progress)

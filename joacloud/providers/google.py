@@ -225,7 +225,7 @@ class GoogleProvider(Provider):
     needs_passphrase = False
     has_unpack_step = False
 
-    def load_entries(self, source: Path) -> list[core.FileEntry]:
+    def load_entries(self, source: Path, passphrase: str = "") -> list[core.FileEntry]:
         return load_entries(source)
 
     # ------------------------------------------------------- arquivos locais

@@ -175,6 +175,17 @@ def _resolve_passphrase(args: argparse.Namespace) -> str:
     )
 
 
+def _load_entries(provider, source: Path, args: argparse.Namespace) -> list[core.FileEntry]:
+    """provider.load_entries; se a fonte for o pacote .zip.gpg, obtem a senha
+    (uma vez so') pelas mesmas opcoes usadas na descriptografia."""
+    passphrase = ""
+    if provider.source_needs_passphrase(Path(source)):
+        if getattr(args, "_passphrase", None) is None:
+            args._passphrase = _resolve_passphrase(args)
+        passphrase = args._passphrase
+    return provider.load_entries(Path(source), passphrase)
+
+
 # ------------------------------------------------------------ progresso no terminal
 
 class TerminalReporter:
@@ -291,7 +302,7 @@ def _menu_run_params(
         if not csv_path:
             csv_path = Path(_prompt_required(provider.source_label))
         try:
-            entries = provider.load_entries(csv_path)
+            entries = _load_entries(provider, csv_path, args)
             break
         except core.PipelineError as exc:
             print(f"Erro: {exc}", file=sys.stderr)
@@ -327,7 +338,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         else:
             csv_path, output_dir = args.csv, args.output_dir
             try:
-                entries = provider.load_entries(csv_path)
+                entries = _load_entries(provider, csv_path, args)
             except core.PipelineError as exc:
                 print(f"Erro: {exc}", file=sys.stderr)
                 return EXIT_FATAL
@@ -361,7 +372,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return EXIT_FATAL
     if decrypt and provider.needs_passphrase and any(provider.needs_unpack(e) for e in selected):
         try:
-            passphrase = _resolve_passphrase(args)
+            passphrase = getattr(args, "_passphrase", None) or _resolve_passphrase(args)
         except core.PipelineError as exc:
             print(f"Erro: {exc}", file=sys.stderr)
             return EXIT_FATAL
@@ -450,7 +461,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return EXIT_FATAL
 
     try:
-        entries = provider.load_entries(csv_path)
+        entries = _load_entries(provider, csv_path, args)
     except core.PipelineError as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         return EXIT_FATAL
@@ -481,7 +492,7 @@ def _cmd_delete(args: argparse.Namespace) -> int:
     try:
         if not csv_path:
             csv_path = Path(_prompt_required(provider.source_label))
-        entries = provider.load_entries(csv_path)
+        entries = _load_entries(provider, csv_path, args)
         if not output_dir:
             output_dir = Path(_prompt_required("Pasta de destino"))
 
@@ -588,7 +599,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
                 output_dir = Path(out_dir_str) if out_dir_str else None
             if csv_path and output_dir:
                 try:
-                    entries = provider.load_entries(Path(csv_path))
+                    entries = _load_entries(provider, Path(csv_path), args)
                 except core.PipelineError as exc:
                     print(f"Erro: {exc}", file=sys.stderr)
                     return EXIT_FATAL
@@ -631,7 +642,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
             selected = selected_entries
         else:
             try:
-                entries = provider.load_entries(Path(csv_path))
+                entries = _load_entries(provider, Path(csv_path), args)
             except core.PipelineError as exc:
                 print(f"Erro: {exc}", file=sys.stderr)
                 return EXIT_FATAL
@@ -762,10 +773,15 @@ def build_parser() -> argparse.ArgumentParser:
         )
         p.add_argument(
             "--csv", "--source", dest="csv", type=Path, default=None,
-            help=source_help or "CSV da Apple, ou pasta com o retorno do LERS (--provider google)",
+            help=source_help or "CSV da Apple (ou o pacote .zip.gpg, com a senha), ou pasta com o retorno do LERS (--provider google)",
         )
 
     run_p = sub.add_parser("run", help="Executa o pipeline (baixar/verificar/descriptografar).")
+    def add_passphrase_args(p: argparse.ArgumentParser) -> None:
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--passphrase-env", default=None, help="Variavel de ambiente com a senha GPG")
+        g.add_argument("--passphrase-stdin", action="store_true", help="Le a senha GPG de uma linha do stdin")
+
     add_provider_args(run_p)
     run_p.add_argument("--output-dir", type=Path, default=None, help="Pasta de destino")
     run_p.add_argument("--download", action=argparse.BooleanOptionalAction, default=True)
@@ -778,9 +794,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--only", default=None, help="Nomes de arquivo separados por virgula")
     run_p.add_argument("--exclude", default=None, help="Nomes de arquivo separados por virgula")
     run_p.add_argument("--pattern", default=None, help="Glob (fnmatch) sobre o nome do arquivo")
-    pass_group = run_p.add_mutually_exclusive_group()
-    pass_group.add_argument("--passphrase-env", default=None, help="Variavel de ambiente com a senha GPG")
-    pass_group.add_argument("--passphrase-stdin", action="store_true", help="Le a senha GPG de uma linha do stdin")
+    add_passphrase_args(run_p)
     run_p.add_argument("--yes", "-y", action="store_true", help="Pula confirmacoes")
     run_p.add_argument("--menu", "-i", action="store_true", help="Forca o menu interativo")
     run_p.add_argument("--quiet", action="store_true", help="So imprime o log estruturado, sem status ao vivo")
@@ -789,12 +803,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_p = sub.add_parser("list", help="Lista os arquivos da fonte (CSV/pasta), sem baixar nada.")
     add_provider_args(list_p)
+    add_passphrase_args(list_p)
     list_p.add_argument("--output-dir", type=Path, default=None)
     list_p.add_argument("--menu", "-i", action="store_true")
     list_p.set_defaults(handler=_cmd_list)
 
     delete_p = sub.add_parser("delete", help="Remove do disco os arquivos ja obtidos de uma selecao.")
     add_provider_args(delete_p)
+    add_passphrase_args(delete_p)
     delete_p.add_argument("--output-dir", type=Path, default=None)
     delete_p.add_argument("--only", default=None, help="Nomes de arquivo separados por virgula (obrigatorio)")
     delete_p.add_argument("--yes", "-y", action="store_true", help="Pula a confirmacao")
@@ -834,7 +850,8 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("--id-documento", default=None)
     report_p.add_argument("--original", action=argparse.BooleanOptionalAction, default=False)
     report_p.add_argument("--processada", action=argparse.BooleanOptionalAction, default=False)
-    add_provider_args(report_p, source_help="Para calcular hashes (CSV da Apple ou pasta do LERS)")
+    add_provider_args(report_p, source_help="Para calcular hashes (CSV da Apple, pacote .zip.gpg ou pasta do LERS)")
+    add_passphrase_args(report_p)
     report_p.add_argument("--output-dir", type=Path, default=None, help="Para calcular hashes")
     report_p.add_argument("--only", default=None, help="Nomes de arquivo separados por virgula")
     report_p.add_argument("--exclude", default=None, help="Nomes de arquivo separados por virgula")
