@@ -4,6 +4,13 @@ Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.2.1] - 2026-11-06
+
+### Alterado
+- GUI: o card de parâmetros de entrada (CSV/pasta de origem, pasta de destino,
+  senha GPG e downloads simultâneos) agora tem fundo cinza escuro, com rótulos
+  claros, para destacar os campos de entrada. Os campos continuam claros.
+
 ## [2.2.0] - 2026-11-06
 
 ### Adicionado

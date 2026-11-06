@@ -39,7 +39,7 @@ import report
 
 APP_TITLE = "JoaCloud"
 APP_DESCRIPTION = "Toolkit para baixar, verificar e abrir retorno de ofícios judiciais — Apple e Google"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 AUTHOR_LINE = "Joaquim Ferreira Silva Neto  ·  joaquimfsneto@gmail.com"
 
 
@@ -71,6 +71,11 @@ DISABLED_BG = "#F5F3EE"
 BUTTON_DISABLED_BG = "#C9C5BA"
 DANGER_TEXT = "#9A2E22"
 DANGER_HOVER = "#F6E4E1"
+PARAMS_BG = "#3B3A36"
+PARAMS_BORDER = "#2A2926"
+PARAMS_LABEL = "#CFCBC0"
+PARAMS_FIELD_BG = "#FBFAF7"
+PARAMS_FIELD_BORDER = "#14130F"
 STATUS_OK_COLOR = "#2E8B57"
 STATUS_ERROR_COLOR = "#C0392B"
 STATUS_WARN_COLOR = "#B8860B"
@@ -636,7 +641,7 @@ class JoaCloudGUI(ctk.CTk):
 
         # --- Config card ---
         config_card = ctk.CTkFrame(
-            self, fg_color=BG_CARD, border_width=1, border_color=BORDER_SOFT, corner_radius=10
+            self, fg_color=PARAMS_BG, border_width=1, border_color=PARAMS_BORDER, corner_radius=10
         )
         config_card.pack(fill="x", padx=20, pady=8)
         config_card.columnconfigure((0, 1), weight=1)
@@ -658,21 +663,21 @@ class JoaCloudGUI(ctk.CTk):
         pass_col.pack(side="left", padx=(0, 32))
         self.pass_col = pass_col
         ctk.CTkLabel(
-            pass_col, text="SENHA GPG", text_color=TEXT_SECONDARY,
+            pass_col, text="SENHA GPG", text_color=PARAMS_LABEL,
             font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
         ).pack(anchor="w")
         pass_row = ctk.CTkFrame(pass_col, fg_color="transparent")
         pass_row.pack(anchor="w", pady=(4, 0))
         self.pass_entry = ctk.CTkEntry(
             pass_row, textvariable=self.passphrase_var, width=220, show="*",
-            fg_color="#FFFFFF", border_color=BORDER, text_color=TEXT_PRIMARY,
+            fg_color=PARAMS_FIELD_BG, border_color=PARAMS_FIELD_BORDER, text_color=TEXT_PRIMARY,
         )
         self.pass_entry.pack(side="left")
         self.pass_entry.bind("<Return>", self._on_passphrase_enter)
         self.show_pass_check = ctk.CTkCheckBox(
             pass_row, text="mostrar", variable=self.show_pass_var,
             command=self._toggle_password, checkbox_width=16, checkbox_height=16,
-            fg_color=ACCENT, text_color=TEXT_SECONDARY, font=ctk.CTkFont(family="DejaVu Sans", size=11),
+            fg_color=ACCENT, text_color=PARAMS_LABEL, font=ctk.CTkFont(family="DejaVu Sans", size=11),
         )
         self.show_pass_check.pack(side="left", padx=(10, 0))
 
@@ -680,12 +685,12 @@ class JoaCloudGUI(ctk.CTk):
         workers_col.pack(side="left")
         self.workers_col = workers_col
         ctk.CTkLabel(
-            workers_col, text="DOWNLOADS SIMULTÂNEOS", text_color=TEXT_SECONDARY,
+            workers_col, text="DOWNLOADS SIMULTÂNEOS", text_color=PARAMS_LABEL,
             font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkEntry(
             workers_col, textvariable=self.workers_var, width=60,
-            fg_color="#FFFFFF", border_color=BORDER, text_color=TEXT_PRIMARY,
+            fg_color=PARAMS_FIELD_BG, border_color=PARAMS_FIELD_BORDER, text_color=TEXT_PRIMARY,
         ).pack(anchor="w", pady=(4, 0))
 
         # --- Pipeline stepper card ---
@@ -823,21 +828,21 @@ class JoaCloudGUI(ctk.CTk):
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
         wrap.grid(row=row, column=col, sticky="we", padx=16, pady=(14, 4))
         label_widget = ctk.CTkLabel(
-            wrap, text=label.upper(), text_color=TEXT_SECONDARY,
+            wrap, text=label.upper(), text_color=PARAMS_LABEL,
             font=ctk.CTkFont(family="DejaVu Sans", size=10, weight="bold"),
         )
         label_widget.pack(anchor="w")
         inner = ctk.CTkFrame(wrap, fg_color="transparent")
         inner.pack(fill="x", pady=(4, 0))
         entry = ctk.CTkEntry(
-            inner, textvariable=variable, fg_color="#FFFFFF", border_color=BORDER,
+            inner, textvariable=variable, fg_color=PARAMS_FIELD_BG, border_color=PARAMS_FIELD_BORDER,
             text_color=TEXT_PRIMARY,
         )
         entry.pack(side="left", fill="x", expand=True)
         ctk.CTkButton(
             inner, text="Selecionar…", command=command, width=100,
             fg_color="#FFFFFF", hover_color=BORDER_SOFT, text_color=TEXT_PRIMARY,
-            border_width=1, border_color=BORDER, corner_radius=8,
+            border_width=1, border_color=PARAMS_FIELD_BORDER, corner_radius=8,
         ).pack(side="left", padx=(8, 0))
         label_widget.row_frame = inner  # pra botoes extras ao lado do campo
         return label_widget
