@@ -4,6 +4,14 @@ Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.2.3] - 2026-11-17
+
+### Corrigido
+- Google: os ZIPs internos (os que têm o SHA-512 listado no PDF) agora são
+  encontrados em qualquer subpasta do ZIP de produção, não só na raiz. Antes,
+  nesses casos os hashes ficavam sem arquivo ("arquivo ausente") e os ZIPs de
+  produção eram tratados como soltos, sem hash.
+
 ## [2.2.2] - 2026-11-17
 
 ### Alterado
