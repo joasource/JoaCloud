@@ -104,6 +104,21 @@ def extract_pdf_text(pdf_path: Path) -> str:
         raise core.PipelineError(f"Nao foi possivel ler o PDF {pdf_path.name}: {exc}") from exc
 
 
+def _basename(member: str) -> str:
+    return member.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _find_member(zf: zipfile.ZipFile, name: str) -> zipfile.ZipInfo:
+    """ZipInfo do ZIP interno ``name`` (pelo nome do arquivo, em qualquer pasta)."""
+    try:
+        return zf.getinfo(name)
+    except KeyError:
+        for info in zf.infolist():
+            if not info.is_dir() and _basename(info.filename) == name:
+                return info
+        raise
+
+
 def _zip_files(folder: Path) -> list[Path]:
     """ZIPs da pasta; se nao houver nenhum no nivel dela, procura nas subpastas."""
     found = sorted(folder.glob("*.zip"))
@@ -119,9 +134,11 @@ def _production_zips(folder: Path) -> dict[str, Path]:
     for path in _zip_files(folder):
         try:
             with zipfile.ZipFile(path) as zf:
+                # ZIPs internos em qualquer nivel (na raiz ou em subpastas); o
+                # nome usado e' o do arquivo, sem a pasta.
                 members = [
-                    info.filename for info in zf.infolist()
-                    if not info.is_dir() and info.filename.lower().endswith(".zip") and "/" not in info.filename
+                    _basename(info.filename) for info in zf.infolist()
+                    if not info.is_dir() and info.filename.lower().endswith(".zip")
                 ]
         except zipfile.BadZipFile:
             continue
@@ -263,7 +280,7 @@ class GoogleProvider(Provider):
         # Le o ZIP interno de dentro do ZIP de producao em memoria, em blocos:
         # nada e' gravado em disco.
         with zipfile.ZipFile(path) as zf:
-            info = zf.getinfo(entry.file_name)
+            info = _find_member(zf, entry.file_name)
             with zf.open(info) as member:
                 return core.hash_of_stream(member, info.file_size, entry.hash_algorithm, on_progress)
 
@@ -272,7 +289,7 @@ class GoogleProvider(Provider):
         if not _is_container(entry):
             return path.stat().st_size
         with zipfile.ZipFile(path) as zf:
-            return zf.getinfo(entry.file_name).file_size
+            return _find_member(zf, entry.file_name).file_size
 
     def document_paths(self, output_dir) -> list[Path]:
         """PDFs baixados do LERS (segundo o manifesto da pasta) que o Google

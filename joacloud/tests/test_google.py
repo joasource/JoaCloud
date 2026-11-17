@@ -473,3 +473,15 @@ def test_source_can_be_the_hash_pdf_itself(lers_folder, tmp_path):
     config, entries, summary = _run(pdf, tmp_path / "out")
     assert summary.concluidos == 2 and summary.erros == 0 and summary.hash_invalido == 0
     assert (tmp_path / "out" / "Valores de Hash 999999999.pdf").is_file()
+
+
+def test_inner_zips_in_subfolder_of_production_zip(tmp_path):
+    folder = tmp_path / "lers"
+    folder.mkdir()
+    data = _inner_zip_bytes({"a.txt": b"x"})
+    _write_production_zip(folder / "12345678-20260101-1.zip", {f"Google/Dados/{INNER_A}": data})
+    _write_pdf(folder / "Valores de Hash.pdf", _hash_pdf_lines({INNER_A: hashlib.sha512(data).hexdigest()}))
+    [entry] = google.load_entries(folder / "Valores de Hash.pdf")
+    assert entry.file_name == INNER_A and entry.file_link.endswith("12345678-20260101-1.zip")
+    _, entries, summary = _run(folder, tmp_path / "out")
+    assert summary.concluidos == 1 and summary.erros == 0 and summary.hash_invalido == 0
