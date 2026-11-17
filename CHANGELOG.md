@@ -4,6 +4,14 @@ Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.2.4] - 2026-11-17
+
+### Corrigido
+- LERS: diferença entre o tamanho baixado e o informado pelo LERS não para mais
+  o download; vira só um aviso no log (o que vale é o hash, conferido depois).
+- LERS: falha em um arquivo não derruba mais os demais; o download segue e o
+  resultado indica quantos faltaram.
+
 ## [2.2.3] - 2026-11-17
 
 ### Corrigido

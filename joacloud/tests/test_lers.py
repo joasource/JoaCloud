@@ -168,11 +168,13 @@ def test_download_files_skips_existing_with_same_size(tmp_path):
     assert session.urls == []
 
 
-def test_download_files_size_mismatch_raises(tmp_path):
+def test_download_files_size_mismatch_only_warns(tmp_path):
     files = [f for f in lers.parse_files(FILES_BODY) if f.kind == "PRODUCTION"]
     client, _ = _client({3: ("111-20260101-1.zip", b"z" * 49)}, rapt=True)
-    with pytest.raises(lers.LersError, match="tamanho"):
-        client.download_files(111, files, tmp_path)
+    logs = []
+    saved = client.download_files(111, files, tmp_path, log=logs.append)
+    assert saved == [tmp_path / "111-20260101-1.zip"]
+    assert any("tamanho diferente" in m for m in logs)
 
 
 def test_download_files_cancelled_before_start(tmp_path):

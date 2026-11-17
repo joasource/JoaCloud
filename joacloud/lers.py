@@ -556,6 +556,12 @@ class LersClient:
                 tab_id = browser.send("Target.createTarget", {"url": url})["targetId"]
                 try:
                     path = self._wait_download(browser, f, dest_dir, wait_start, log, on_progress, cancel_event)
+                except LersError as exc:
+                    # Falha de um arquivo nao derruba os demais: segue e o
+                    # chamador ve que faltou (saved < files).
+                    log(core.log_line("ERROR", "lers", "falha no download, seguindo para o proximo",
+                                      file=f.name, erro=str(exc)))
+                    continue
                 finally:
                     try:
                         browser.send("Target.closeTarget", {"targetId": tab_id}, timeout=5)
@@ -615,10 +621,12 @@ class LersClient:
                 if state == "completed":
                     path = dest_dir / name
                     size = path.stat().st_size if path.is_file() else -1
+                    if size < 0:
+                        raise LersError(f"{name}: o navegador informou o download concluido, mas o arquivo nao existe")
                     if size != f.size:
-                        raise LersError(
-                            f"{name}: tamanho baixado ({size}) diferente do informado pelo LERS ({f.size})"
-                        )
+                        # So aviso: o que vale e' o hash, conferido adiante.
+                        log(core.log_line("WARN", "lers", "tamanho diferente do informado pelo LERS (seguindo)",
+                                          file=name, baixado=size, informado=f.size))
                     log(core.log_line("OK", "lers", "download concluido", file=name, bytes=size,
                                       duracao=f"{time.monotonic() - started:.2f}s"))
                     return path
