@@ -461,3 +461,15 @@ def test_cli_report_google_lists_pdf_hashes_before_raw_data(lers_folder, tmp_pat
     assert carta in text[docs:raw]
     assert all(digest in text[raw:] for digest in hashes.values())
     assert f"**Quantidade de Arquivos:** {len(hashes)}" in text
+
+
+def test_source_can_be_the_hash_pdf_itself(lers_folder, tmp_path):
+    folder, inner, hashes = lers_folder
+    pdf = folder / "Valores de Hash 999999999.pdf"
+    entries = google.load_entries(pdf)
+    assert {e.file_name: e.expected_hash for e in entries} == hashes
+    assert all(e.file_link.endswith("12345678-20260101-1.zip") for e in entries)
+
+    config, entries, summary = _run(pdf, tmp_path / "out")
+    assert summary.concluidos == 2 and summary.erros == 0 and summary.hash_invalido == 0
+    assert (tmp_path / "out" / "Valores de Hash 999999999.pdf").is_file()

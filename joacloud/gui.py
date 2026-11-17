@@ -848,7 +848,7 @@ class JoaCloudGUI(ctk.CTk):
         return label_widget
 
     def _empty_list_text(self) -> str:
-        what = "a pasta com o retorno do LERS" if self.provider.source_is_dir else "o CSV da Apple"
+        what = "o CSV da Apple" if self.provider.key == "apple" else "o PDF de valores de hash do Google"
         return f"Selecione {what} para listar os arquivos aqui."
 
     def _step_keys(self) -> tuple[str, ...]:
@@ -949,7 +949,7 @@ class JoaCloudGUI(ctk.CTk):
             path = filedialog.askdirectory(title=f"Selecione a {self.provider.source_label.lower()}")
         else:
             path = filedialog.askopenfilename(
-                title=f"Selecione o {self.provider.source_label}", filetypes=[("CSV ou pacote da Apple", "*.csv *.gpg *.zip"), ("Todos", "*.*")]
+                title=f"Selecione o {self.provider.source_label}", filetypes=self.provider.source_filetypes
             )
         if path:
             self.source_path_var.set(path)

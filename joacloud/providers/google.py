@@ -104,13 +104,19 @@ def extract_pdf_text(pdf_path: Path) -> str:
         raise core.PipelineError(f"Nao foi possivel ler o PDF {pdf_path.name}: {exc}") from exc
 
 
+def _zip_files(folder: Path) -> list[Path]:
+    """ZIPs da pasta; se nao houver nenhum no nivel dela, procura nas subpastas."""
+    found = sorted(folder.glob("*.zip"))
+    return found or sorted(p for p in folder.rglob("*.zip") if p.is_file())
+
+
 def _production_zips(folder: Path) -> dict[str, Path]:
     """{nome_do_zip_interno: zip_de_producao_que_o_contem} para os ZIPs da pasta.
 
     ZIPs que nao contem nenhum outro .zip na raiz sao ignorados aqui (podem
     ser ZIPs internos ja soltos na pasta, tratados a parte)."""
     index: dict[str, Path] = {}
-    for path in sorted(folder.glob("*.zip")):
+    for path in _zip_files(folder):
         try:
             with zipfile.ZipFile(path) as zf:
                 members = [
@@ -124,26 +130,40 @@ def _production_zips(folder: Path) -> dict[str, Path]:
     return index
 
 
-def load_entries(folder: Path) -> list[core.FileEntry]:
-    folder = Path(folder)
-    if not folder.is_dir():
-        raise core.PipelineError(f"Pasta com o retorno do Google nao encontrada: {folder}")
+def split_source(source: Path) -> tuple[Path, list[Path]]:
+    """(pasta, PDFs de hashes) da fonte escolhida.
+
+    A fonte pode ser a pasta com o retorno do LERS (todos os PDFs dela sao
+    lidos) ou o proprio PDF de "Valores de Hash" (so' ele e' lido; os ZIPs
+    sao procurados na pasta onde ele esta')."""
+    source = Path(source)
+    if source.is_file():
+        return source.parent, [source]
+    if not source.is_dir():
+        raise core.PipelineError(f"Arquivo ou pasta com o retorno do Google nao encontrado: {source}")
+    return source, sorted(source.glob("*.pdf"))
+
+
+def load_entries(source: Path) -> list[core.FileEntry]:
+    folder, pdfs = split_source(source)
 
     containers = _production_zips(folder)
     loose = {
-        p.name: p for p in folder.glob("*.zip")
+        p.name: p for p in _zip_files(folder)
         if p.name not in containers and p not in containers.values()
     }
     known_names = set(containers) | set(loose)
 
     expected: dict[str, str] = {}
-    for pdf in sorted(folder.glob("*.pdf")):
+    for pdf in pdfs:
+        if pdf.suffix.lower() != ".pdf":
+            raise core.PipelineError(f"O arquivo de valores de hash do Google deve ser um PDF: {pdf.name}")
         expected.update(parse_hash_text(extract_pdf_text(pdf), known_names))
 
     if not known_names and not expected:
         raise core.PipelineError(
-            "Nenhum ZIP de producao nem PDF de hashes do Google encontrado na pasta: "
-            f"{folder}"
+            "Nenhum ZIP de producao nem PDF de hashes do Google encontrado: "
+            f"{source}"
         )
 
     entries: list[core.FileEntry] = []
@@ -211,8 +231,10 @@ class GoogleProvider(Provider):
     hash_algorithm = HASH_ALGORITHM
     package_description = "pacotes compactados (formato ZIP)"
 
-    source_label = "Pasta com o retorno do LERS"
-    source_is_dir = True
+    source_label = "PDF de valores de hash (ou pasta do LERS)"
+    # A fonte e' o PDF de hashes; uma pasta do LERS tambem e' aceita.
+    source_is_dir = False
+    source_filetypes = [("PDF de valores de hash", "*.pdf"), ("Todos", "*.*")]
     download_description = (
         "Copia os ZIPs de produção e os PDFs do LERS para o destino, sem alterá-los."
     )
@@ -277,14 +299,15 @@ class GoogleProvider(Provider):
     def prepare(self, config, entries, log) -> None:
         """Copia os PDFs de correspondencia (incluindo o de hashes) e o manifesto
         do LERS junto com os ZIPs."""
-        if not config.download or not config.source.is_dir():
+        if not config.download or not config.source.exists():
             return
-        if config.source.resolve() == config.output_dir.resolve():
+        folder = config.source if config.source.is_dir() else config.source.parent
+        if folder.resolve() == config.output_dir.resolve():
             return
-        manifest = config.source / lers.MANIFEST_NAME
+        manifest = folder / lers.MANIFEST_NAME
         if manifest.is_file():
             shutil.copy2(manifest, config.output_dir / manifest.name)
-        for pdf in sorted(config.source.glob("*.pdf")):
+        for pdf in sorted(folder.glob("*.pdf")):
             dest = config.output_dir / pdf.name
             if dest.exists():
                 continue

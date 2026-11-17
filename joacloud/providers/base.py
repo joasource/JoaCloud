@@ -51,6 +51,8 @@ class Provider:
     # Textos da interface (GUI/CLI).
     source_label: str = ""
     source_is_dir: bool = False
+    # Filtros do seletor de arquivo (quando a fonte nao e' uma pasta).
+    source_filetypes: list = [("CSV ou pacote da Apple", "*.csv *.gpg *.zip"), ("Todos", "*.*")]
     download_description: str = ""
     verify_description: str = ""
     unpack_label: str = ""
