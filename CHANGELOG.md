@@ -4,6 +4,14 @@ Histórico de versões do JoaCloud (até a 1.9.0, JoaKApple). Formato baseado no
 [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); as versões
 seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.2.2] - 2026-11-17
+
+### Alterado
+- Google: a fonte de entrada agora é o PDF de "Valores de Hash" (a pasta do
+  LERS continua aceita). Os hashes são lidos direto do PDF selecionado e os
+  ZIPs são procurados na pasta dele (e nas subpastas, se não houver nenhum no
+  nível do PDF).
+
 ## [2.2.1] - 2026-11-06
 
 ### Alterado
